@@ -1,0 +1,28 @@
+---
+- name: Test read_config module
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Read configuration for testrole
+      read_config:
+        role_name: testrole
+        config_dir: config
+        config_tag: production
+      register: all_configs
+
+    - name: Output merged configuration
+      debug:
+        var: all_configs.ansible_facts.merged_configs
+
+    - name: Read only the subfolder2 config
+      read_config:
+        role_name: testrole
+        config_dir: config
+        config_path: subfolder2/subfolder3
+        config_tag: production 
+      register: role_config
+
+    - name: Display single config
+      debug:
+        var: role_config.ansible_facts.merged_config

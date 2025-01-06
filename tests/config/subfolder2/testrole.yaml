@@ -1,0 +1,7 @@
+key2:
+  subkey2b: subval2b
+common:
+  info:
+    environment: "production"
+new_key: "new_value"
+config_tag: production

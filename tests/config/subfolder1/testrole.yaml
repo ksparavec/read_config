@@ -1,0 +1,6 @@
+key1: val1
+key2:
+  subkey2a: subval2a
+common:
+  info:
+    region: "us-east-1"
