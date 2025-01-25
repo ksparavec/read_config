@@ -1,9 +1,6 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright ...
-# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
-
 DOCUMENTATION = r'''
 ---
 module: read_config
@@ -120,17 +117,25 @@ from ansible.module_utils.basic import AnsibleModule
 
 def deep_merge(dict1, dict2):
     """
-    Recursively merge dict2 into dict1. Returns dict1.
+    Merge dict2 into dict1 using an explicit loop and stack;
+    Returns dict1.
     """
-    for key, value in dict2.items():
-        if (
-            key in dict1
-            and isinstance(dict1[key], dict)
-            and isinstance(value, dict)
-        ):
-            deep_merge(dict1[key], value)
-        else:
-            dict1[key] = value
+    items_to_process = [(dict1, dict2)]
+    
+    while items_to_process:
+        current_dict1, current_dict2 = items_to_process.pop()
+        
+        for key, value in current_dict2.items():
+            if (
+                key in current_dict1
+                and isinstance(current_dict1[key], dict)
+                and isinstance(value, dict)
+            ):
+                # Instead of recursing, add the nested dicts to our processing queue
+                items_to_process.append((current_dict1[key], value))
+            else:
+                current_dict1[key] = value
+    
     return dict1
 
 def get_config_file_if_exists(directory, role_name):
