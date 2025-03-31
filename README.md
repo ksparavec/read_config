@@ -24,7 +24,7 @@ Ansible will automatically detect modules in the `library/` folder.
 | Parameter       | Required | Default | Description                                                                                                                                              |
 |------------------|:--------:|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **role_name**    | **Yes**  | N/A     | Name of the role to search for in `<role_name>.yaml` or `<role_name>.yml` files.                                                                          |
-| **config_dir**   | **Yes**  | N/A     | Top-level directory to scan for configuration files.                                                                                                     |
+| **config_dir**   | No       | `<role_path>/<role_name>/vars` | Top-level directory to scan for configuration files. Defaults to `<role_path>/<role_name>/vars` if existent.                                                                                                    |
 | **config_path**  | No       | `null`  | If specified, restricts output to a single directory. Can be an absolute or relative path to the directory.                                              |
 | **config_tag**   | No       | `null`  | If specified, only configurations whose merged data contains `config_tag: <value>` are included in the results.                                           |
 
