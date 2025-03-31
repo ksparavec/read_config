@@ -113,6 +113,7 @@ ansible_facts:
 
 import os
 import yaml
+import configparser
 from ansible.module_utils.basic import AnsibleModule
 
 def deep_merge(dict1, dict2):
@@ -184,7 +185,10 @@ def build_merged_config_for_directory(target_dir, config_dir, role_name):
     #   /foo/bar/baz
     # ]
     subpaths = []
-    rel_parts = os.path.relpath(target_dir_abs, config_dir_abs).split(os.path.sep)
+    if config_dir_abs != target_dir_abs:
+        rel_parts = os.path.relpath(target_dir_abs, config_dir_abs).split(os.path.sep)
+    else:
+        rel_parts = []
     current_path = config_dir_abs
     subpaths.append(current_path)
 
@@ -209,10 +213,68 @@ def build_merged_config_for_directory(target_dir, config_dir, role_name):
 
     return (merged_data, files_merged)
 
+def find_role_vars_dir(role_name):
+    """
+    Given a role_name, find the first existent subdirectory "role_name/vars" 
+    in the paths defined by the 'roles_path' configuration parameter.
+    
+    Args:
+        role_name (str): The role name to search for.
+    
+    Returns:
+        str: The full path to the first existent "role_name/vars" directory.
+        None: If no such directory is found.
+    """
+    # Locate the Ansible configuration file
+    config_path = os.getenv('ANSIBLE_CONFIG')
+    
+    if not config_path:
+        # Check for ANSIBLE_HOME/ansible.cfg
+        ansible_home = os.getenv('ANSIBLE_HOME')
+        if ansible_home:
+            config_path = os.path.join(ansible_home, 'ansible.cfg')
+        else:
+            # Check for $HOME/ansible.cfg
+            home = os.getenv('HOME')
+            if home:
+                config_path = os.path.join(home, 'ansible.cfg')
+
+    if not config_path or not os.path.isfile(config_path):
+        return None
+
+    # Load the configuration using configparser
+    config = configparser.ConfigParser()
+    config.read(config_path)
+
+    # Check if 'roles_path' is defined in the 'defaults' section
+    if 'defaults' not in config.sections():
+        return None
+
+    roles_paths = config.get('defaults', 'roles_path', fallback=None)
+    
+    if not roles_paths:
+        return None
+
+    # Split the roles_path by ':' to get a list of directories
+    roles_paths = roles_paths.split(':')
+
+    # Inspect each directory in roles_path
+    for base_path in roles_paths:
+        # Construct the full path to the "role_name/vars" directory
+        potential_path = os.path.join(base_path, role_name, 'vars')
+        potential_path = potential_path.replace('~', os.getenv('HOME'))
+ 
+        # Check if the directory exists
+        if os.path.exists(potential_path):
+            return potential_path
+    
+    # Return None if no valid path is found
+    return None
+
 def run_module():
     module_args = dict(
         role_name=dict(type='str', required=True),
-        config_dir=dict(type='str', required=True),
+        config_dir=dict(type='str', required=False, default=None),
         config_path=dict(type='str', required=False, default=None),
         config_tag=dict(type='str', required=False, default=None)
     )
@@ -224,6 +286,9 @@ def run_module():
     config_dir = module.params['config_dir']
     config_path = module.params['config_path']
     config_tag = module.params['config_tag']
+
+    if not config_dir:
+        config_dir = find_role_vars_dir(role_name)
 
     # Convert config_dir to absolute so any relative path is normalized
     config_dir = os.path.abspath(config_dir)
