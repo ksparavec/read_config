@@ -12,22 +12,25 @@ description:
   - If no config_path is specified, multiple configs are returned in C(merged_configs).
     If config_path is specified, only that directory's final merged config is returned in C(merged_config).
   - An optional parameter C(config_tag) can be specified to filter out any configs whose final merged data does
-    not have a matching config_tag key/value. 
-version_added: "1.0.0"
+    not have a matching config_tag key/value.
+version_added: "2.0.0"
 options:
   role_name:
     description:
       - The name of the role for which configuration files should be read.
+      - Cannot contain path separators.
     type: str
     required: true
   config_dir:
     description:
       - The top-level directory to search recursively for YAML configuration files.
-    type: str
-    required: true
+      - Must exist and be readable.
+    type: path
+    required: false
   config_path:
     description:
       - If specified, only return the merged config for that specific directory path (absolute or relative to config_dir).
+      - Must be within config_dir to prevent path traversal.
     type: str
     required: false
     default: null
@@ -38,11 +41,49 @@ options:
     type: str
     required: false
     default: null
+  dry_run:
+    description:
+      - If true, show what files would be merged without reading them.
+    type: bool
+    required: false
+    default: false
+  validate_schema:
+    description:
+      - Optional JSON schema file path to validate configurations against.
+    type: str
+    required: false
+    default: null
+  format:
+    description:
+      - Format of the configuration files to read.
+    type: str
+    required: false
+    default: yaml
+    choices: [yaml, json, ini]
+  track_changes:
+    description:
+      - If true, track configuration changes between runs.
+    type: bool
+    required: false
+    default: false
 author:
-  - "Your Name (@yourGitHubHandle)"
+  - "Kresimir Sparavec (@ksparavec)"
 '''
 
 EXAMPLES = r'''
+- name: Handle missing configurations gracefully
+  read_config:
+    role_name: nonexistent_role
+    config_dir: /path/to/config
+  register: result
+  failed_when: false
+
+- name: Use with delegate_to for remote config reading
+  read_config:
+    role_name: myapp
+    config_dir: /etc/myapp/config
+  delegate_to: "{{ inventory_hostname }}"
+
 - name: Read all role configs for testrole from /path/to/config
   read_config:
     role_name: testrole
@@ -51,7 +92,7 @@ EXAMPLES = r'''
 
 - name: Show all configs
   debug:
-    var: all_configs.ansible_facts.merged_configs
+    var: all_configs.ansible_facts.read_config.configs
 
 - name: Read only subfolder2 config
   read_config:
@@ -62,7 +103,7 @@ EXAMPLES = r'''
 
 - name: Show single config
   debug:
-    var: single_config.ansible_facts.merged_config
+    var: single_config.ansible_facts.read_config.configs
 
 - name: Read all configs but only those tagged 'production'
   read_config:
@@ -73,117 +114,152 @@ EXAMPLES = r'''
 
 - name: Show production configs
   debug:
-    var: prod_configs.ansible_facts.merged_configs
+    var: prod_configs.ansible_facts.read_config.configs
 '''
 
 RETURN = r'''
 ansible_facts:
   description:
-    - Returns either "merged_configs" (a dict of directories => merged config)
-      or "merged_config" (a single config) depending on whether config_path is specified.
+    - Returns a standardized structure with mode, configs, and matched_count.
+    - When track_changes is enabled, includes changed_files list.
   type: dict
   returned: always
   sample:
-    merged_configs:
-      "/absolute/path/to/config":
-        meta:
-          files_merged:
-            - "/absolute/path/to/config/testrole.yaml"
-        data:
-          key1: val1
-          key2: val2
-      "/absolute/path/to/config/subfolder2":
-        meta:
-          files_merged:
-            - "/absolute/path/to/config/testrole.yaml"
-            - "/absolute/path/to/config/subfolder2/testrole.yaml"
-        data:
-          key2:
-            subkey2b: val2b
-          config_tag: production
-
-    # If config_path is given:
-    merged_config:
-      meta:
-        files_merged:
-          - ...
-      data:
-        ...
+    read_config:
+      mode: multiple
+      configs:
+        "/absolute/path/to/config":
+          meta:
+            files_merged:
+              - "/absolute/path/to/config/testrole.yaml"
+          data:
+            key1: val1
+            key2: val2
+        "/absolute/path/to/config/subfolder2":
+          meta:
+            files_merged:
+              - "/absolute/path/to/config/testrole.yaml"
+              - "/absolute/path/to/config/subfolder2/testrole.yaml"
+          data:
+            key2:
+              subkey2b: val2b
+            config_tag: production
+      matched_count: 2
+      changed_files:
+        - "/absolute/path/to/config/testrole.yaml"
+        - "/absolute/path/to/config/subfolder2/testrole.yaml"
+changed:
+  description:
+    - Whether any configuration files have changed since the last run.
+    - Only set when track_changes is enabled.
+  type: bool
+  returned: when track_changes is true
+  sample: true
 '''
 
 import os
 import yaml
+import json
 import configparser
+import hashlib
+import jsonschema
 from ansible.module_utils.basic import AnsibleModule
+from ansible.module_utils.common.dict_transformations import dict_merge
 
-def deep_merge(dict1, dict2):
-    """
-    Merge dict2 into dict1 using an explicit loop and stack;
-    Returns dict1.
-    """
-    items_to_process = [(dict1, dict2)]
+class ConfigCache:
+    """Cache for configuration files to improve performance."""
+    def __init__(self):
+        self._cache = {}
+        self._checksums = {}
+        self._previous_checksums = {}
+        self._changed_files = set()
     
-    while items_to_process:
-        current_dict1, current_dict2 = items_to_process.pop()
-        
-        for key, value in current_dict2.items():
-            if (
-                key in current_dict1
-                and isinstance(current_dict1[key], dict)
-                and isinstance(value, dict)
-            ):
-                # Instead of recursing, add the nested dicts to our processing queue
-                items_to_process.append((current_dict1[key], value))
-            else:
-                current_dict1[key] = value
+    def load_config(self, filepath, format_type='yaml'):
+        """Load and cache a configuration file in the specified format."""
+        if filepath not in self._cache:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    if format_type == 'yaml':
+                        self._cache[filepath] = yaml.safe_load(content) or {}
+                    elif format_type == 'json':
+                        self._cache[filepath] = json.loads(content) or {}
+                    elif format_type == 'ini':
+                        config = configparser.ConfigParser()
+                        config.read_string(content)
+                        self._cache[filepath] = {s: dict(config.items(s)) for s in config.sections()}
+                    self._checksums[filepath] = hashlib.sha256(content.encode()).hexdigest()
+            except Exception as e:
+                raise RuntimeError(f"Error reading {filepath}: {e}")
+        return self._cache[filepath].copy()
     
-    return dict1
+    def load_previous_checksums(self, checksum_file):
+        """Load previous checksums from file."""
+        try:
+            with open(checksum_file, 'r') as f:
+                self._previous_checksums = json.load(f)
+        except FileNotFoundError:
+            self._previous_checksums = {}
+    
+    def save_checksums(self, checksum_file):
+        """Save current checksums to file."""
+        with open(checksum_file, 'w') as f:
+            json.dump(self._checksums, f)
+    
+    def get_changed_files(self):
+        """Get list of files that have changed since last run."""
+        self._changed_files = {
+            f for f, checksum in self._checksums.items()
+            if f not in self._previous_checksums or self._previous_checksums[f] != checksum
+        }
+        return self._changed_files
 
-def get_config_file_if_exists(directory, role_name):
-    """
-    If directory has <role_name>.yaml or <role_name>.yml, return its absolute path;
-    otherwise return None.
-    """
-    candidates = [f"{role_name}.yaml", f"{role_name}.yml"]
+def validate_path_security(base_path, target_path):
+    """Ensure target_path is within base_path."""
+    base = os.path.abspath(base_path)
+    target = os.path.abspath(target_path)
+    if not target.startswith(base + os.sep) and target != base:
+        raise ValueError(f"Path traversal detected: {target} is outside {base}")
+    return target
+
+def get_config_file_if_exists(directory, role_name, format_type='yaml'):
+    """If directory has <role_name>.<format>, return its absolute path."""
+    extensions = {
+        'yaml': ['.yaml', '.yml'],
+        'json': ['.json'],
+        'ini': ['.ini', '.cfg']
+    }
+    candidates = [f"{role_name}{ext}" for ext in extensions.get(format_type, ['.yaml', '.yml'])]
     for candidate in candidates:
         cfg_path = os.path.join(directory, candidate)
         if os.path.isfile(cfg_path):
             return cfg_path
     return None
 
-def find_directories_with_role_config(config_dir, role_name):
-    """
-    Walk through config_dir and find each directory that contains a file
-    named <role_name>.yaml or <role_name>.yml. Return a set of directories.
-    """
+def find_directories_with_role_config(config_dir, role_name, format_type='yaml'):
+    """Walk through config_dir and find each directory that contains a matching config file."""
     dirs_with_configs = set()
+    extensions = {
+        'yaml': ['.yaml', '.yml'],
+        'json': ['.json'],
+        'ini': ['.ini', '.cfg']
+    }
     for root, dirs, files in os.walk(config_dir):
         for f in files:
-            if f in [f"{role_name}.yaml", f"{role_name}.yml"]:
+            if any(f == f"{role_name}{ext}" for ext in extensions.get(format_type, ['.yaml', '.yml'])):
                 dirs_with_configs.add(root)
     return dirs_with_configs
 
-def build_merged_config_for_directory(target_dir, config_dir, role_name):
-    """
-    Build a merged config for 'target_dir' by scanning from config_dir -> subfolder -> ... -> target_dir.
-    Each subpath is included in the merge if it has a <role_name>.yaml|yml file.
-    Return (merged_data, files_merged).
-    """
+def build_merged_config_for_directory(target_dir, config_dir, role_name, config_cache, format_type='yaml', dry_run=False):
+    """Build a merged config for 'target_dir' by scanning from config_dir -> subfolder -> ... -> target_dir."""
     config_dir_abs = os.path.abspath(config_dir)
     target_dir_abs = os.path.abspath(target_dir)
 
-    # Optional check to ensure target_dir_abs is inside config_dir_abs
-    if not target_dir_abs.startswith(config_dir_abs):
-        raise RuntimeError(
-            f"Target directory {target_dir_abs} is not under config_dir {config_dir_abs}"
-        )
+    try:
+        target_dir_abs = validate_path_security(config_dir_abs, target_dir_abs)
+    except ValueError as e:
+        raise RuntimeError(str(e))
 
-    # Build a list of all intermediate paths from config_dir_abs down to target_dir_abs
-    # e.g. if config_dir_abs=/foo and target_dir_abs=/foo/bar/baz, then subpaths = [
-    #   /foo,
-    #   /foo/bar,
-    #   /foo/bar/baz
-    # ]
     subpaths = []
     if config_dir_abs != target_dir_abs:
         rel_parts = os.path.relpath(target_dir_abs, config_dir_abs).split(os.path.sep)
@@ -199,170 +275,221 @@ def build_merged_config_for_directory(target_dir, config_dir, role_name):
     merged_data = {}
     files_merged = []
 
-    # Merge each subpath if it has a config file
     for subpath in subpaths:
-        cfg_file = get_config_file_if_exists(subpath, role_name)
+        cfg_file = get_config_file_if_exists(subpath, role_name, format_type)
         if cfg_file:
-            try:
-                with open(cfg_file, 'r', encoding='utf-8') as f:
-                    data = yaml.safe_load(f) or {}
-                deep_merge(merged_data, data)
+            if dry_run:
                 files_merged.append(cfg_file)
-            except Exception as e:
-                raise RuntimeError(f"Error reading configuration file {cfg_file}: {e}")
+            else:
+                data = config_cache.load_config(cfg_file, format_type)
+                dict_merge(merged_data, data)
+                files_merged.append(cfg_file)
 
     return (merged_data, files_merged)
 
 def find_role_vars_dir(role_name):
-    """
-    Given a role_name, find the first existent subdirectory "role_name/vars" 
-    in the paths defined by the 'roles_path' configuration parameter.
-    
-    Args:
-        role_name (str): The role name to search for.
-    
-    Returns:
-        str: The full path to the first existent "role_name/vars" directory.
-        None: If no such directory is found.
-    """
-    # Locate the Ansible configuration file
+    """Find the first existent subdirectory "role_name/vars" in the roles_path."""
     config_path = os.getenv('ANSIBLE_CONFIG')
     
     if not config_path:
-        # Check for ANSIBLE_HOME/ansible.cfg
-        ansible_home = os.getenv('ANSIBLE_HOME')
-        if ansible_home:
-            config_path = os.path.join(ansible_home, 'ansible.cfg')
-        else:
-            # Check for $HOME/ansible.cfg
-            home = os.getenv('HOME')
-            if home:
-                config_path = os.path.join(home, 'ansible.cfg')
+        for env_var, filename in [('ANSIBLE_HOME', 'ansible.cfg'), ('HOME', 'ansible.cfg')]:
+            base_path = os.getenv(env_var)
+            if base_path:
+                path = os.path.join(base_path, filename)
+                if os.path.isfile(path):
+                    config_path = path
+                    break
 
     if not config_path or not os.path.isfile(config_path):
         return None
 
-    # Load the configuration using configparser
     config = configparser.ConfigParser()
-    config.read(config_path)
-
-    # Check if 'roles_path' is defined in the 'defaults' section
-    if 'defaults' not in config.sections():
+    try:
+        config.read(config_path)
+        roles_paths = config.get('defaults', 'roles_path', fallback='')
+        for base_path in roles_paths.split(':'):
+            potential_path = os.path.join(base_path, role_name, 'vars')
+            potential_path = potential_path.replace('~', os.getenv('HOME'))
+            if os.path.exists(potential_path):
+                return potential_path
+    except Exception:
         return None
-
-    roles_paths = config.get('defaults', 'roles_path', fallback=None)
     
-    if not roles_paths:
-        return None
-
-    # Split the roles_path by ':' to get a list of directories
-    roles_paths = roles_paths.split(':')
-
-    # Inspect each directory in roles_path
-    for base_path in roles_paths:
-        # Construct the full path to the "role_name/vars" directory
-        potential_path = os.path.join(base_path, role_name, 'vars')
-        potential_path = potential_path.replace('~', os.getenv('HOME'))
- 
-        # Check if the directory exists
-        if os.path.exists(potential_path):
-            return potential_path
-    
-    # Return None if no valid path is found
     return None
 
+def validate_against_schema(data, schema_path):
+    """Validate data against a JSON schema."""
+    try:
+        with open(schema_path, 'r') as f:
+            schema = json.load(f)
+        jsonschema.validate(instance=data, schema=schema)
+        return True
+    except Exception as e:
+        raise ValueError(f"Schema validation failed: {str(e)}")
+
 def run_module():
+    """Main module execution function."""
     module_args = dict(
-        role_name=dict(type='str', required=True),
-        config_dir=dict(type='str', required=False, default=None),
+        role_name=dict(type='str', required=True, no_log=False),
+        config_dir=dict(type='path', required=False, default=None),
         config_path=dict(type='str', required=False, default=None),
-        config_tag=dict(type='str', required=False, default=None)
+        config_tag=dict(type='str', required=False, default=None),
+        dry_run=dict(type='bool', required=False, default=False),
+        validate_schema=dict(type='str', required=False, default=None),
+        format=dict(type='str', required=False, default='yaml', choices=['yaml', 'json', 'ini']),
+        track_changes=dict(type='bool', required=False, default=False)
     )
 
     result = dict(changed=False, ansible_facts={})
-
     module = AnsibleModule(argument_spec=module_args, supports_check_mode=True)
-    role_name = module.params['role_name']
-    config_dir = module.params['config_dir']
-    config_path = module.params['config_path']
-    config_tag = module.params['config_tag']
 
-    if not config_dir:
-        config_dir = find_role_vars_dir(role_name)
+    try:
+        role_name = module.params['role_name']
+        config_dir = module.params['config_dir']
+        config_path = module.params['config_path']
+        config_tag = module.params['config_tag']
+        dry_run = module.params['dry_run']
+        validate_schema = module.params['validate_schema']
+        format_type = module.params['format']
+        track_changes = module.params['track_changes']
 
-    # Convert config_dir to absolute so any relative path is normalized
-    config_dir = os.path.abspath(config_dir)
-    if not os.path.exists(config_dir):
-        module.fail_json(msg=f"Configuration directory does not exist: {config_dir}")
+        # Validate role_name
+        if not role_name or not role_name.strip():
+            module.fail_json(msg="role_name cannot be empty")
+        if os.sep in role_name or '/' in role_name or '\\' in role_name:
+            module.fail_json(msg="role_name cannot contain path separators")
 
-    # Find directories that directly contain <role_name>.yaml or .yml
-    dirs_with_configs = find_directories_with_role_config(config_dir, role_name)
+        # Get config_dir
+        if not config_dir:
+            config_dir = find_role_vars_dir(role_name)
+            if not config_dir:
+                module.fail_json(msg=f"Could not determine config_dir for role: {role_name}")
 
-    if not dirs_with_configs:
-        # No matching files found anywhere
+        # Validate config_dir
+        if not os.path.exists(config_dir):
+            module.fail_json(msg=f"Configuration directory does not exist: {config_dir}")
+        if not os.access(config_dir, os.R_OK):
+            module.fail_json(msg=f"Configuration directory is not readable: {config_dir}")
+
+        # Initialize config cache
+        config_cache = ConfigCache()
+
+        # Handle change tracking
+        if track_changes:
+            checksum_file = os.path.join(config_dir, f".{role_name}_checksums.json")
+            config_cache.load_previous_checksums(checksum_file)
+
+        # Find directories with configs
+        dirs_with_configs = find_directories_with_role_config(config_dir, role_name, format_type)
+
+        if not dirs_with_configs:
+            result['ansible_facts'] = {
+                'read_config': {
+                    'mode': 'single' if config_path else 'multiple',
+                    'configs': {},
+                    'matched_count': 0
+                }
+            }
+            module.exit_json(**result)
+
+        # Handle single config path
         if config_path:
-            # We intended to get a single config, but there's none at all
-            result['ansible_facts']['merged_config'] = {}
+            try:
+                merged_data, files_merged = build_merged_config_for_directory(
+                    target_dir=config_path,
+                    config_dir=config_dir,
+                    role_name=role_name,
+                    config_cache=config_cache,
+                    format_type=format_type,
+                    dry_run=dry_run
+                )
+
+                # Validate against schema if specified
+                if validate_schema and not dry_run:
+                    try:
+                        validate_against_schema(merged_data, validate_schema)
+                    except ValueError as e:
+                        module.fail_json(msg=str(e))
+
+                if config_tag and merged_data.get('config_tag') != config_tag:
+                    result['ansible_facts'] = {
+                        'read_config': {
+                            'mode': 'single',
+                            'configs': {},
+                            'matched_count': 0
+                        }
+                    }
+                else:
+                    result['ansible_facts'] = {
+                        'read_config': {
+                            'mode': 'single',
+                            'configs': {
+                                config_path: {
+                                    'meta': {
+                                        'files_merged': files_merged
+                                    },
+                                    'data': merged_data
+                                }
+                            },
+                            'matched_count': 1
+                        }
+                    }
+            except Exception as e:
+                module.fail_json(msg=str(e))
+
+        # Handle multiple configs
         else:
-            # Return empty dictionary of configs
-            result['ansible_facts']['merged_configs'] = {}
-        module.exit_json(**result)
+            merged_configs = {}
+            for d in dirs_with_configs:
+                try:
+                    merged_data, files_merged = build_merged_config_for_directory(
+                        target_dir=d,
+                        config_dir=config_dir,
+                        role_name=role_name,
+                        config_cache=config_cache,
+                        format_type=format_type,
+                        dry_run=dry_run
+                    )
 
-    # If config_path is specified => return a single config
-    if config_path:
-        # Convert config_path to absolute if it's not already
-        if not os.path.isabs(config_path):
-            config_path = os.path.join(config_dir, config_path)
-        config_path_abs = os.path.abspath(config_path)
+                    # Validate against schema if specified
+                    if validate_schema and not dry_run:
+                        try:
+                            validate_against_schema(merged_data, validate_schema)
+                        except ValueError as e:
+                            module.fail_json(msg=str(e))
 
-        # We do the build even if subfolder doesn't contain a direct file,
-        # because it may inherit from parent directories.
-        merged_data, files_merged = build_merged_config_for_directory(
-            target_dir=config_path_abs,
-            config_dir=config_dir,
-            role_name=role_name
-        )
+                    if config_tag and merged_data.get('config_tag') != config_tag:
+                        continue
 
-        # Now if config_tag is given, we only keep this config if it matches
-        if config_tag:
-            # If the final config doesn't have config_tag or doesn't match, return empty
-            if merged_data.get('config_tag') != config_tag:
-                result['ansible_facts']['merged_config'] = {}
-                module.exit_json(**result)
+                    merged_configs[d] = {
+                        'meta': {
+                            'files_merged': files_merged
+                        },
+                        'data': merged_data
+                    }
+                except Exception as e:
+                    module.fail_json(msg=str(e))
 
-        # If we get here => either no config_tag was specified or it matches
-        result['ansible_facts']['merged_config'] = {
-            'meta': {
-                'files_merged': files_merged
-            },
-            'data': merged_data
-        }
-        module.exit_json(**result)
-
-    else:
-        # No config_path => return multiple configs in merged_configs
-        merged_configs = {}
-        for d in dirs_with_configs:
-            merged_data, files_merged = build_merged_config_for_directory(
-                target_dir=d,
-                config_dir=config_dir,
-                role_name=role_name
-            )
-            # Check tag if specified
-            if config_tag:
-                if merged_data.get('config_tag') != config_tag:
-                    # Skip this directory if it doesn't match
-                    continue
-
-            merged_configs[d] = {
-                'meta': {
-                    'files_merged': files_merged
-                },
-                'data': merged_data
+            result['ansible_facts'] = {
+                'read_config': {
+                    'mode': 'multiple',
+                    'configs': merged_configs,
+                    'matched_count': len(merged_configs)
+                }
             }
 
-        result['ansible_facts']['merged_configs'] = merged_configs
+        # Handle change tracking
+        if track_changes and not dry_run:
+            changed_files = config_cache.get_changed_files()
+            if changed_files:
+                result['changed'] = True
+                result['ansible_facts']['read_config']['changed_files'] = list(changed_files)
+                config_cache.save_checksums(checksum_file)
+
         module.exit_json(**result)
+
+    except Exception as e:
+        module.fail_json(msg=f"Unexpected error: {str(e)}")
 
 def main():
     run_module()

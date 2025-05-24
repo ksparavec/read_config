@@ -4,25 +4,409 @@
   gather_facts: false
 
   tasks:
-    - name: Read configuration for testrole
+    # Setup test environment
+    - name: Create test directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      with_items:
+        - config
+        - config/subfolder1
+        - config/subfolder2
+        - config/subfolder2/subfolder3
+        - config/invalid_path
+
+    - name: Create test schema file
+      copy:
+        content: |
+          {
+            "type": "object",
+            "properties": {
+              "key1": { "type": "string" },
+              "key2": { "type": "object" },
+              "config_tag": { "type": "string" }
+            },
+            "required": ["key1"]
+          }
+        dest: config/schema.json
+        mode: '0644'
+
+    - name: Create invalid schema file
+      copy:
+        content: |
+          {
+            "type": "invalid_type",
+            "properties": {
+              "key1": { "type": "invalid_type" }
+            }
+          }
+        dest: config/invalid_schema.json
+        mode: '0644'
+
+    - name: Create YAML test files
+      copy:
+        content: "{{ item.content }}"
+        dest: "{{ item.path }}"
+        mode: '0644'
+      with_items:
+        - path: config/testrole.yaml
+          content: |
+            key1: yaml_value1
+            key2:
+              subkey: subvalue1
+            config_tag: production
+        - path: config/subfolder1/testrole.yaml
+          content: |
+            key1: yaml_value2
+            key2:
+              subkey: subvalue2
+            config_tag: staging
+        - path: config/subfolder2/testrole.yaml
+          content: |
+            key1: yaml_value3
+            key2:
+              subkey: subvalue3
+            config_tag: production
+        - path: config/subfolder2/subfolder3/testrole.yaml
+          content: |
+            key1: yaml_value4
+            key2:
+              subkey: subvalue4
+            config_tag: production
+        - path: config/empty.yaml
+          content: ""
+        - path: config/invalid.yaml
+          content: "invalid: yaml: content: ["
+
+    - name: Create JSON test files
+      copy:
+        content: "{{ item.content }}"
+        dest: "{{ item.path }}"
+        mode: '0644'
+      with_items:
+        - path: config/testrole.json
+          content: |
+            {
+              "key1": "json_value1",
+              "key2": {
+                "subkey": "subvalue1"
+              },
+              "config_tag": "production"
+            }
+        - path: config/subfolder1/testrole.json
+          content: |
+            {
+              "key1": "json_value2",
+              "key2": {
+                "subkey": "subvalue2"
+              },
+              "config_tag": "staging"
+            }
+        - path: config/invalid.json
+          content: "{invalid json content"
+
+    - name: Create INI test files
+      copy:
+        content: "{{ item.content }}"
+        dest: "{{ item.path }}"
+        mode: '0644'
+      with_items:
+        - path: config/testrole.ini
+          content: |
+            [main]
+            key1 = ini_value1
+            key2.subkey = subvalue1
+            config_tag = production
+        - path: config/subfolder1/testrole.ini
+          content: |
+            [main]
+            key1 = ini_value2
+            key2.subkey = subvalue2
+            config_tag = staging
+        - path: config/invalid.ini
+          content: "[invalid section\nkey = value"
+
+    # Test basic functionality with different formats
+    - name: Test YAML format
+      read_config:
+        role_name: testrole
+        config_dir: config
+        format: yaml
+      register: yaml_configs
+
+    - name: Verify YAML config structure
+      assert:
+        that:
+          - yaml_configs.ansible_facts.read_config.mode == 'multiple'
+          - yaml_configs.ansible_facts.read_config.matched_count > 0
+          - yaml_configs.ansible_facts.read_config.configs is defined
+          - yaml_configs.ansible_facts.read_config.configs | length == 4
+
+    - name: Test JSON format
+      read_config:
+        role_name: testrole
+        config_dir: config
+        format: json
+      register: json_configs
+
+    - name: Verify JSON config structure
+      assert:
+        that:
+          - json_configs.ansible_facts.read_config.mode == 'multiple'
+          - json_configs.ansible_facts.read_config.matched_count > 0
+          - json_configs.ansible_facts.read_config.configs is defined
+          - json_configs.ansible_facts.read_config.configs | length == 2
+
+    - name: Test INI format
+      read_config:
+        role_name: testrole
+        config_dir: config
+        format: ini
+      register: ini_configs
+
+    - name: Verify INI config structure
+      assert:
+        that:
+          - ini_configs.ansible_facts.read_config.mode == 'multiple'
+          - ini_configs.ansible_facts.read_config.matched_count > 0
+          - ini_configs.ansible_facts.read_config.configs is defined
+          - ini_configs.ansible_facts.read_config.configs | length == 2
+
+    # Test config_path parameter
+    - name: Test specific config path
+      read_config:
+        role_name: testrole
+        config_dir: config
+        config_path: subfolder2
+        format: yaml
+      register: path_configs
+
+    - name: Verify specific path config
+      assert:
+        that:
+          - path_configs.ansible_facts.read_config.mode == 'single'
+          - path_configs.ansible_facts.read_config.matched_count == 1
+          - path_configs.ansible_facts.read_config.configs is defined
+          - 'subfolder2' in path_configs.ansible_facts.read_config.configs
+
+    # Test config_tag parameter
+    - name: Test config tag filtering
       read_config:
         role_name: testrole
         config_dir: config
         config_tag: production
-      register: all_configs
+        format: yaml
+      register: tag_configs
 
-    - name: Output merged configuration
-      debug:
-        var: all_configs.ansible_facts.merged_configs
+    - name: Verify tag filtering
+      assert:
+        that:
+          - tag_configs.ansible_facts.read_config.mode == 'multiple'
+          - tag_configs.ansible_facts.read_config.matched_count == 3
+          - tag_configs.ansible_facts.read_config.configs is defined
+          - tag_configs.ansible_facts.read_config.configs | length == 3
 
-    - name: Read only the subfolder2 config
+    # Test schema validation
+    - name: Test schema validation
       read_config:
         role_name: testrole
         config_dir: config
-        config_path: subfolder2/subfolder3
-        config_tag: production 
-      register: role_config
+        format: yaml
+        validate_schema: config/schema.json
+      register: validated_configs
 
-    - name: Display single config
-      debug:
-        var: role_config.ansible_facts.merged_config
+    - name: Verify schema validation
+      assert:
+        that:
+          - validated_configs.ansible_facts.read_config.mode == 'multiple'
+          - validated_configs.ansible_facts.read_config.matched_count > 0
+
+    # Test change tracking
+    - name: Test change tracking
+      read_config:
+        role_name: testrole
+        config_dir: config
+        track_changes: true
+      register: tracked_configs
+
+    - name: Verify change tracking
+      assert:
+        that:
+          - tracked_configs.ansible_facts.read_config.mode == 'multiple'
+          - tracked_configs.ansible_facts.read_config.matched_count > 0
+          - tracked_configs.ansible_facts.read_config.changed_files is defined
+          - tracked_configs.changed is true
+
+    # Test dry run
+    - name: Test dry run
+      read_config:
+        role_name: testrole
+        config_dir: config
+        dry_run: true
+      register: dry_run_configs
+
+    - name: Verify dry run
+      assert:
+        that:
+          - dry_run_configs.ansible_facts.read_config.mode == 'multiple'
+          - dry_run_configs.ansible_facts.read_config.matched_count > 0
+          - dry_run_configs.ansible_facts.read_config.configs is defined
+
+    # Test combined features
+    - name: Test combined features
+      read_config:
+        role_name: testrole
+        config_dir: config
+        format: yaml
+        validate_schema: config/schema.json
+        track_changes: true
+        config_tag: production
+        config_path: subfolder2
+      register: combined_configs
+
+    - name: Verify combined features
+      assert:
+        that:
+          - combined_configs.ansible_facts.read_config.mode == 'single'
+          - combined_configs.ansible_facts.read_config.matched_count == 1
+          - combined_configs.ansible_facts.read_config.configs is defined
+          - combined_configs.ansible_facts.read_config.changed_files is defined
+
+    # Test edge cases and error conditions
+    - name: Test invalid role name
+      read_config:
+        role_name: "test/role"
+        config_dir: config
+      register: invalid_role_result
+      failed_when: false
+
+    - name: Verify invalid role name handling
+      assert:
+        that:
+          - invalid_role_result.failed is true
+          - "'role_name cannot contain path separators'" in invalid_role_result.msg
+
+    - name: Test path traversal attempt
+      read_config:
+        role_name: testrole
+        config_dir: config
+        config_path: "../../etc"
+      register: path_traversal_result
+      failed_when: false
+
+    - name: Verify path traversal handling
+      assert:
+        that:
+          - path_traversal_result.failed is true
+          - "Path traversal detected" in path_traversal_result.msg
+
+    - name: Test non-existent directory
+      read_config:
+        role_name: testrole
+        config_dir: /nonexistent/dir
+      register: nonexistent_dir_result
+      failed_when: false
+
+    - name: Verify non-existent directory handling
+      assert:
+        that:
+          - nonexistent_dir_result.failed is true
+          - "Configuration directory does not exist" in nonexistent_dir_result.msg
+
+    - name: Test invalid schema
+      read_config:
+        role_name: testrole
+        config_dir: config
+        validate_schema: config/invalid_schema.json
+      register: invalid_schema_result
+      failed_when: false
+
+    - name: Verify invalid schema handling
+      assert:
+        that:
+          - invalid_schema_result.failed is true
+
+    - name: Test invalid format
+      read_config:
+        role_name: testrole
+        config_dir: config
+        format: invalid
+      register: invalid_format_result
+      failed_when: false
+
+    - name: Verify invalid format handling
+      assert:
+        that:
+          - invalid_format_result.failed is true
+
+    - name: Test empty config file
+      read_config:
+        role_name: empty
+        config_dir: config
+      register: empty_config_result
+
+    - name: Verify empty config handling
+      assert:
+        that:
+          - empty_config_result.ansible_facts.read_config.matched_count == 0
+
+    - name: Test invalid config file
+      read_config:
+        role_name: invalid
+        config_dir: config
+      register: invalid_config_result
+      failed_when: false
+
+    - name: Verify invalid config handling
+      assert:
+        that:
+          - invalid_config_result.failed is true
+
+    # Test change tracking edge cases
+    - name: Test change tracking with no changes
+      read_config:
+        role_name: testrole
+        config_dir: config
+        track_changes: true
+      register: no_changes_result
+
+    - name: Verify no changes tracking
+      assert:
+        that:
+          - no_changes_result.changed is false
+          - no_changes_result.ansible_facts.read_config.changed_files is defined
+          - no_changes_result.ansible_facts.read_config.changed_files | length == 0
+
+    # Cleanup
+    - name: Clean up test files
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - config/schema.json
+        - config/invalid_schema.json
+        - config/testrole.yaml
+        - config/subfolder1/testrole.yaml
+        - config/subfolder2/testrole.yaml
+        - config/subfolder2/subfolder3/testrole.yaml
+        - config/empty.yaml
+        - config/invalid.yaml
+        - config/testrole.json
+        - config/subfolder1/testrole.json
+        - config/invalid.json
+        - config/testrole.ini
+        - config/subfolder1/testrole.ini
+        - config/invalid.ini
+        - config/.testrole_checksums.json
+
+    - name: Clean up test directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - config/subfolder2/subfolder3
+        - config/subfolder2
+        - config/subfolder1
+        - config/invalid_path
+        - config
