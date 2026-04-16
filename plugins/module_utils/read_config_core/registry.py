@@ -12,7 +12,12 @@ _REGISTRY: dict[str, BackendFactory] = {}
 
 
 def register_backend(name: str, factory: BackendFactory) -> None:
-    """Register a backend factory under ``name``. Overwrites existing entries."""
+    """Register a backend factory under ``name``. Overwrites existing entries.
+
+    ``factory`` must accept keyword arguments only and return a
+    ``ConfigBackend`` instance. Typical factories are just the backend class
+    itself (``register_backend("sql", SQLBackend)``).
+    """
     _REGISTRY[name] = factory
 
 

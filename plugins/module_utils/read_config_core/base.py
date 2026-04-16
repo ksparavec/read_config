@@ -28,30 +28,73 @@ class MergeResult:
 
 @runtime_checkable
 class ConfigBackend(Protocol):
-    """Contract every storage backend must satisfy."""
+    """Contract every storage backend must satisfy.
+
+    Behavioral invariants (enforced by ``tests/unit/test_backend_contract.py``):
+
+    * ``discover`` returns an iterable of location strings. Unknown roles yield
+      an empty iterable, not an error.
+    * ``resolve_ancestry(target)`` returns a non-empty list ending with
+      ``target``. Invalid targets raise ``ValueError``.
+    * ``exists(loc, role)`` is True iff ``load(loc, role)`` returns non-None.
+    * ``fingerprint`` is stable across calls for unchanged data and ``None``
+      when no data exists at the location.
+    * ``identify`` returns a non-empty, stable string used for provenance
+      (e.g. the ``files_merged`` list in the module output).
+    """
 
     def discover(self, role_name: str) -> Iterable[Location]:
-        """Return every location that holds config data for ``role_name``."""
+        """Return every location that holds config data for ``role_name``.
+
+        Used by the module in multi-mode to enumerate all targets. Must be
+        deterministic enough to produce consistent ``matched_count`` values
+        across runs with unchanged data.
+        """
 
     def resolve_ancestry(self, target: Location) -> list[Location]:
         """Return the ordered merge chain for ``target``.
 
-        The chain must be inclusive of ``target`` and ordered lowest-precedence
-        first (root → ... → target). A backend that considers ``target`` invalid
-        (e.g. outside its root, unknown id) must raise ``ValueError``.
+        The chain is inclusive of ``target`` (as its last element) and ordered
+        lowest-precedence first. For a filesystem layout, that means
+        ``[root, .../intermediate, target]``. For other backends, "parent" is
+        whatever the storage model defines (e.g. an SQL ``parent_id``,
+        shortened key prefix).
+
+        :raises ValueError: if ``target`` is outside the backend's purview
+            (path traversal, unknown id, etc.).
         """
 
     def load(self, location: Location, role_name: str) -> dict | None:
-        """Return parsed data at ``location`` for ``role_name``, or ``None``."""
+        """Return parsed data at ``location`` for ``role_name``, or ``None``.
+
+        ``None`` must be returned for locations that are part of a valid
+        ancestry chain but simply have no config for this role (e.g. a parent
+        directory without a matching file).
+        """
 
     def exists(self, location: Location, role_name: str) -> bool:
-        """Return True if ``load`` would yield data. Used by dry_run paths."""
+        """Return True if ``load`` would yield data. Used by dry_run paths.
+
+        Backends should make this cheaper than ``load`` where possible (e.g.
+        ``os.path.isfile`` vs. parsing YAML, or an SQL EXISTS query vs. a
+        full SELECT).
+        """
 
     def fingerprint(self, location: Location, role_name: str) -> str | None:
-        """Return a change-detection token, or ``None`` if no data exists."""
+        """Return a change-detection token, or ``None`` if no data exists.
+
+        The token can be any string that changes when the underlying data
+        changes — a content hash, a monotonic timestamp, an ETag. Two calls
+        for unchanged data must return equal strings.
+        """
 
     def identify(self, location: Location, role_name: str) -> str:
-        """Return a stable, human-readable identifier for provenance output."""
+        """Return a stable, human-readable identifier for provenance output.
+
+        For the filesystem backend this is the absolute config file path; for
+        SQL it might be a row URI; for HTTP the fetched endpoint. The value
+        appears verbatim in ``ansible_facts.read_config.configs[*].meta.files_merged``.
+        """
 
 
 class MergeEngine:
