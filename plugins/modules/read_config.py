@@ -282,7 +282,7 @@ def build_merged_config_for_directory(target_dir, config_dir, role_name, config_
                 files_merged.append(cfg_file)
             else:
                 data = config_cache.load_config(cfg_file, format_type)
-                dict_merge(merged_data, data)
+                merged_data = dict_merge(merged_data, data)
                 files_merged.append(cfg_file)
 
     return (merged_data, files_merged)

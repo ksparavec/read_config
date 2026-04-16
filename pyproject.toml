@@ -1,0 +1,30 @@
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+pythonpath = ["plugins/modules"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "unit: unit tests (default)",
+    "integration: integration tests that invoke the module as a subprocess",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["plugins/modules"]
+omit = [
+    "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "def main\\(\\):",
+    "raise NotImplementedError",
+]
