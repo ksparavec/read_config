@@ -7,9 +7,10 @@ COLLECTION_NAME      := ansible
 COLLECTION_VERSION   := $(shell awk '/^version:/ {print $$2}' galaxy.yml)
 COLLECTION_TARBALL   := $(COLLECTION_NAMESPACE)-$(COLLECTION_NAME)-$(COLLECTION_VERSION).tar.gz
 COLLECTIONS_PATH     ?= $(HOME)/.ansible/collections
+GALAXY_SERVER        ?= https://galaxy.ansible.com
 
 .PHONY: help venv install test unit integration test-all coverage coverage-html \
-        build install-local uninstall-local clean
+        build install-local uninstall-local publish clean
 
 help:
 	@echo "Testing:"
@@ -27,6 +28,9 @@ help:
 	@echo "  install-local    Install the built tarball into \$$COLLECTIONS_PATH"
 	@echo "                   (default: $(COLLECTIONS_PATH))"
 	@echo "  uninstall-local  Remove the installed collection from \$$COLLECTIONS_PATH"
+	@echo "  publish          ansible-galaxy collection publish to \$$GALAXY_SERVER"
+	@echo "                   (default: $(GALAXY_SERVER))"
+	@echo "                   Requires GALAXY_API_TOKEN in the environment."
 	@echo ""
 	@echo "  clean            Remove caches, coverage, and build artifacts"
 
@@ -72,6 +76,18 @@ install-local: build
 
 uninstall-local:
 	rm -rf $(COLLECTIONS_PATH)/ansible_collections/$(COLLECTION_NAMESPACE)/$(COLLECTION_NAME)
+
+publish: build
+	@if [ -z "$$GALAXY_API_TOKEN" ]; then \
+		echo "ERROR: GALAXY_API_TOKEN is not set."; \
+		echo "Get a token from $(GALAXY_SERVER)/ui/token and export GALAXY_API_TOKEN."; \
+		exit 1; \
+	fi
+	$(BIN)/ansible-galaxy collection publish \
+		--server $(GALAXY_SERVER) \
+		--token $$GALAXY_API_TOKEN \
+		$(COLLECTION_TARBALL)
+	@echo "Published $(COLLECTION_TARBALL) to $(GALAXY_SERVER)"
 
 clean:
 	rm -rf .pytest_cache htmlcov .coverage .coverage.*
