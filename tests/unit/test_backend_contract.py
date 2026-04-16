@@ -46,6 +46,12 @@ class BackendContract:
 
     ROLE_NAME = "testrole"
 
+    # Most backends (filesystem, SQL, KV) derive discoverability from stored
+    # data — an unknown role has no data and discover() returns empty. HTTP
+    # backends list layers structurally without probing the API, so they set
+    # this to False to opt out of the unknown-role test.
+    DISCOVER_FILTERS_BY_ROLE = True
+
     # --- subclasses MUST override ---------------------------------------
     @pytest.fixture
     def backend(self):  # pragma: no cover - abstract
@@ -74,6 +80,8 @@ class BackendContract:
         assert all(isinstance(loc, str) for loc in result)
 
     def test_discover_handles_unknown_role(self, backend) -> None:
+        if not self.DISCOVER_FILTERS_BY_ROLE:
+            pytest.skip("backend's discover() doesn't examine role-specific data")
         result = list(backend.discover("definitely_not_a_real_role_xyz"))
         assert result == []
 
@@ -270,20 +278,30 @@ class TestRedisKVBackendContract(BackendContract):
 
 # --- HTTPBackend instantiation (requests-mock) -----------------------------
 class TestHTTPBackendContract(BackendContract):
-    BASE_URL = "https://api.example.com/configs"
+    """Treat each layer as an ancestor level in the ConfigBackend sense:
+    ``populated`` and ``empty`` are distinct layer names whose URLs return
+    different status codes."""
+
+    BASE_URL = "https://api.example.com"
+    DISCOVER_FILTERS_BY_ROLE = False
 
     @pytest.fixture
     def backend(self, requests_mock) -> HTTPBackend:
         requests_mock.get(
-            f"{self.BASE_URL}/{self.ROLE_NAME}/production",
+            f"{self.BASE_URL}/populated",
             json={"k": "v"},
             headers={"ETag": '"stable-etag"'},
         )
         requests_mock.get(
-            f"{self.BASE_URL}/{self.ROLE_NAME}/staging-no-row",
+            f"{self.BASE_URL}/empty",
             status_code=404,
         )
-        return HTTPBackend(base_url=self.BASE_URL)
+        return HTTPBackend(
+            layers=[
+                {"name": "production", "url": f"{self.BASE_URL}/populated"},
+                {"name": "staging-no-row", "url": f"{self.BASE_URL}/empty"},
+            ]
+        )
 
     @pytest.fixture
     def populated_location(self, backend: HTTPBackend) -> str:
@@ -292,3 +310,7 @@ class TestHTTPBackendContract(BackendContract):
     @pytest.fixture
     def empty_location(self, backend: HTTPBackend) -> str:
         return "staging-no-row"
+
+    @pytest.fixture
+    def invalid_location(self, backend: HTTPBackend) -> str:
+        return "layer-that-doesnt-exist"

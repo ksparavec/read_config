@@ -7,7 +7,7 @@ from .filesystem import (
     get_config_file_if_exists,
     validate_path_security,
 )
-from .http import HTTPBackend
+from .http import HTTPBackend, HTTPLayer
 from .kv import InMemoryKVClient, KVBackend, KVClient
 from .kv_consul import ConsulKVClient, make_consul_backend
 from .kv_etcd import EtcdKVClient, make_etcd_backend
@@ -22,6 +22,7 @@ __all__ = [
     "EtcdKVClient",
     "FilesystemBackend",
     "HTTPBackend",
+    "HTTPLayer",
     "InMemoryKVClient",
     "KVBackend",
     "KVClient",
