@@ -1,9 +1,21 @@
 """Shared conformance contract every ConfigBackend implementation must satisfy.
 
-``BackendContract`` is a fixture-driven abstract test class. A new backend
-adds one subclass, overrides the three fixtures, and inherits the full suite::
+The contract is split into three classes so applicability is structural rather
+than runtime-skipped:
 
-    class TestMyBackendContract(BackendContract):
+* ``BackendContract`` — invariants every backend must honor.
+* ``ValidatesTargetsContract`` — additional test for backends that reject
+  malformed targets (filesystem path traversal, named-layer lookups, etc.).
+  Subclasses must override the ``invalid_location`` fixture.
+* ``ContentAwareDiscoveryContract`` — additional test for backends whose
+  ``discover()`` examines stored data (an unknown role has no data and
+  discovery returns empty). Backends that list structural units (e.g. HTTP
+  layers) don't satisfy this.
+
+A new backend adds one subclass that inherits from ``BackendContract`` plus
+whichever optional mixins apply, and provides the three required fixtures::
+
+    class TestMyBackendContract(BackendContract, ValidatesTargetsContract):
         @pytest.fixture
         def backend(self, tmp_path):
             return MyBackend(...)
@@ -16,7 +28,9 @@ adds one subclass, overrides the three fixtures, and inherits the full suite::
         def empty_location(self, backend):
             return "loc-without-data"
 
-Optional fixture: ``invalid_location`` for backends that validate targets.
+        @pytest.fixture
+        def invalid_location(self, backend):  # only for ValidatesTargetsContract
+            return "illegal-target"
 """
 from __future__ import annotations
 
@@ -42,15 +56,9 @@ from read_config_core.http import HTTPBackend  # noqa: E402
 
 
 class BackendContract:
-    """Protocol-conformance tests. Subclasses supply backend + locations."""
+    """Invariants every ``ConfigBackend`` must honor."""
 
     ROLE_NAME = "testrole"
-
-    # Most backends (filesystem, SQL, KV) derive discoverability from stored
-    # data — an unknown role has no data and discover() returns empty. HTTP
-    # backends list layers structurally without probing the API, so they set
-    # this to False to opt out of the unknown-role test.
-    DISCOVER_FILTERS_BY_ROLE = True
 
     # --- subclasses MUST override ---------------------------------------
     @pytest.fixture
@@ -65,11 +73,6 @@ class BackendContract:
     def empty_location(self, backend):  # pragma: no cover - abstract
         raise NotImplementedError("override in subclass")
 
-    # --- optional: backends that validate targets can override ----------
-    @pytest.fixture
-    def invalid_location(self, backend):
-        return None  # default: skip validation test
-
     # --- protocol conformance ------------------------------------------
     def test_satisfies_protocol(self, backend) -> None:
         assert isinstance(backend, ConfigBackend)
@@ -78,12 +81,6 @@ class BackendContract:
     def test_discover_is_iterable_of_strings(self, backend) -> None:
         result = list(backend.discover(self.ROLE_NAME))
         assert all(isinstance(loc, str) for loc in result)
-
-    def test_discover_handles_unknown_role(self, backend) -> None:
-        if not self.DISCOVER_FILTERS_BY_ROLE:
-            pytest.skip("backend's discover() doesn't examine role-specific data")
-        result = list(backend.discover("definitely_not_a_real_role_xyz"))
-        assert result == []
 
     # --- resolve_ancestry ----------------------------------------------
     def test_resolve_ancestry_returns_non_empty_list(
@@ -105,14 +102,6 @@ class BackendContract:
     ) -> None:
         chain = backend.resolve_ancestry(populated_location)
         assert all(isinstance(loc, str) for loc in chain)
-
-    def test_resolve_ancestry_rejects_invalid_target(
-        self, backend, invalid_location
-    ) -> None:
-        if invalid_location is None:
-            pytest.skip("backend does not validate targets")
-        with pytest.raises(ValueError):
-            backend.resolve_ancestry(invalid_location)
 
     # --- load ----------------------------------------------------------
     def test_load_returns_dict_for_populated_location(
@@ -178,8 +167,38 @@ class BackendContract:
         assert first == second
 
 
+class ValidatesTargetsContract:
+    """Mix in for backends that raise ``ValueError`` on malformed targets."""
+
+    @pytest.fixture
+    def invalid_location(self, backend):  # pragma: no cover - abstract
+        raise NotImplementedError("override in subclass")
+
+    def test_resolve_ancestry_rejects_invalid_target(
+        self, backend, invalid_location
+    ) -> None:
+        with pytest.raises(ValueError):
+            backend.resolve_ancestry(invalid_location)
+
+
+class ContentAwareDiscoveryContract:
+    """Mix in for backends whose ``discover()`` examines stored data.
+
+    These backends return an empty iterable for a role that has no data at
+    all. Structural backends (e.g. HTTP, where the layer list is fixed at
+    construction time) do not satisfy this invariant and should not include
+    this mixin.
+    """
+
+    def test_discover_handles_unknown_role(self, backend) -> None:
+        result = list(backend.discover("definitely_not_a_real_role_xyz"))
+        assert result == []
+
+
 # --- FilesystemBackend instantiation ---------------------------------------
-class TestFilesystemBackendContract(BackendContract):
+class TestFilesystemBackendContract(
+    BackendContract, ValidatesTargetsContract, ContentAwareDiscoveryContract
+):
     @pytest.fixture
     def backend(self, tmp_path: Path) -> FilesystemBackend:
         root = tmp_path / "cfg"
@@ -203,7 +222,7 @@ class TestFilesystemBackendContract(BackendContract):
 
 
 # --- SQLBackend instantiation ----------------------------------------------
-class TestSQLBackendContract(BackendContract):
+class TestSQLBackendContract(BackendContract, ContentAwareDiscoveryContract):
     @pytest.fixture
     def backend(self, tmp_path: Path) -> SQLBackend:
         db_path = tmp_path / "contract.sqlite"
@@ -238,11 +257,9 @@ class TestSQLBackendContract(BackendContract):
     def empty_location(self, backend: SQLBackend) -> str:
         return "staging-no-row"
 
-    # SQL backend does not validate target shape; skip invalid_location.
-
 
 # --- In-memory KVBackend instantiation -------------------------------------
-class TestInMemoryKVBackendContract(BackendContract):
+class TestInMemoryKVBackendContract(BackendContract, ContentAwareDiscoveryContract):
     @pytest.fixture
     def backend(self) -> KVBackend:
         client = InMemoryKVClient(
@@ -260,7 +277,7 @@ class TestInMemoryKVBackendContract(BackendContract):
 
 
 # --- Redis KVBackend instantiation (fakeredis) -----------------------------
-class TestRedisKVBackendContract(BackendContract):
+class TestRedisKVBackendContract(BackendContract, ContentAwareDiscoveryContract):
     @pytest.fixture
     def backend(self) -> KVBackend:
         fake = fakeredis.FakeRedis()
@@ -277,13 +294,13 @@ class TestRedisKVBackendContract(BackendContract):
 
 
 # --- HTTPBackend instantiation (requests-mock) -----------------------------
-class TestHTTPBackendContract(BackendContract):
-    """Treat each layer as an ancestor level in the ConfigBackend sense:
-    ``populated`` and ``empty`` are distinct layer names whose URLs return
-    different status codes."""
+class TestHTTPBackendContract(BackendContract, ValidatesTargetsContract):
+    """HTTP discovery is structural (layer list), not content-aware — so this
+    subclass does not include ``ContentAwareDiscoveryContract``. Targets are
+    validated (unknown layer name → ValueError), so the targets mixin applies.
+    """
 
     BASE_URL = "https://api.example.com"
-    DISCOVER_FILTERS_BY_ROLE = False
 
     @pytest.fixture
     def backend(self, requests_mock) -> HTTPBackend:
