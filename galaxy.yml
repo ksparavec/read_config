@@ -1,0 +1,56 @@
+---
+namespace: devitops
+name: read_config
+version: 1.0.0
+
+readme: README.md
+
+authors:
+  - Kresimir Sparavec <ksparavec@devitops.com>
+
+description: >
+  Ansible module that recursively reads and merges hierarchical role
+  configurations from pluggable storage backends (filesystem, SQL,
+  Redis, etcd, Consul, HTTP/REST).
+
+license:
+  - MIT
+
+tags:
+  - configuration
+  - config
+  - merge
+  - hierarchical
+  - backend
+  - filesystem
+  - sql
+  - redis
+  - etcd
+  - consul
+  - rest
+  - http
+
+dependencies: {}
+
+repository: https://github.com/ksparavec/read_config
+issues: https://github.com/ksparavec/read_config/issues
+documentation: https://github.com/ksparavec/read_config/blob/main/README.md
+
+build_ignore:
+  - .venv
+  - .pytest_cache
+  - .coverage
+  - .coverage.*
+  - htmlcov
+  - __pycache__
+  - "*.pyc"
+  - "*.tar.gz"
+  - tests
+  - Makefile
+  - pyproject.toml
+  - requirements-dev.txt
+  - CLAUDE.md
+  - .gitignore
+  - .git
+  - .claude
+  - .vscode
