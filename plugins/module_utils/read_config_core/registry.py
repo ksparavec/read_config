@@ -5,6 +5,9 @@ from typing import Any, Callable
 
 from .base import ConfigBackend
 from .filesystem import FilesystemBackend
+from .kv_consul import make_consul_backend
+from .kv_etcd import make_etcd_backend
+from .kv_redis import make_redis_backend
 from .sql import SQLBackend
 
 BackendFactory = Callable[..., ConfigBackend]
@@ -35,6 +38,10 @@ def available_backends() -> list[str]:
     return sorted(_REGISTRY)
 
 
-# Seed with built-in backends.
+# Seed with built-in backends. KV store factories import their vendor clients
+# lazily so listing backends doesn't require every library to be installed.
 register_backend("filesystem", FilesystemBackend)
 register_backend("sql", SQLBackend)
+register_backend("redis", make_redis_backend)
+register_backend("etcd", make_etcd_backend)
+register_backend("consul", make_consul_backend)

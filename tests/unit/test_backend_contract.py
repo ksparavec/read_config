@@ -26,10 +26,15 @@ import pytest
 
 from read_config_core.base import ConfigBackend
 from read_config_core.filesystem import FilesystemBackend
+from read_config_core.kv import InMemoryKVClient, KVBackend
 
 sqlalchemy = pytest.importorskip("sqlalchemy")
 
 from read_config_core.sql import SQLBackend  # noqa: E402
+
+fakeredis = pytest.importorskip("fakeredis")
+
+from read_config_core.kv_redis import RedisKVClient  # noqa: E402
 
 
 class BackendContract:
@@ -222,3 +227,38 @@ class TestSQLBackendContract(BackendContract):
         return "staging-no-row"
 
     # SQL backend does not validate target shape; skip invalid_location.
+
+
+# --- In-memory KVBackend instantiation -------------------------------------
+class TestInMemoryKVBackendContract(BackendContract):
+    @pytest.fixture
+    def backend(self) -> KVBackend:
+        client = InMemoryKVClient(
+            {f"{self.ROLE_NAME}/production": b'{"k": "v"}'}
+        )
+        return KVBackend(client)
+
+    @pytest.fixture
+    def populated_location(self, backend: KVBackend) -> str:
+        return "production"
+
+    @pytest.fixture
+    def empty_location(self, backend: KVBackend) -> str:
+        return "staging-no-row"
+
+
+# --- Redis KVBackend instantiation (fakeredis) -----------------------------
+class TestRedisKVBackendContract(BackendContract):
+    @pytest.fixture
+    def backend(self) -> KVBackend:
+        fake = fakeredis.FakeRedis()
+        fake.set(f"{self.ROLE_NAME}/production", b'{"k": "v"}')
+        return KVBackend(RedisKVClient(fake))
+
+    @pytest.fixture
+    def populated_location(self, backend: KVBackend) -> str:
+        return "production"
+
+    @pytest.fixture
+    def empty_location(self, backend: KVBackend) -> str:
+        return "staging-no-row"
