@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
-pythonpath = ["plugins/modules"]
+pythonpath = ["plugins/modules", "plugins/module_utils"]
 addopts = [
     "-ra",
     "--strict-markers",
@@ -13,9 +13,10 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["plugins/modules"]
+source = ["plugins/modules", "plugins/module_utils"]
 omit = [
     "tests/*",
+    "*/__init__.py",
 ]
 
 [tool.coverage.report]
