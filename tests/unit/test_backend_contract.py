@@ -36,6 +36,10 @@ fakeredis = pytest.importorskip("fakeredis")
 
 from read_config_core.kv_redis import RedisKVClient  # noqa: E402
 
+requests_mock_pkg = pytest.importorskip("requests_mock")
+
+from read_config_core.http import HTTPBackend  # noqa: E402
+
 
 class BackendContract:
     """Protocol-conformance tests. Subclasses supply backend + locations."""
@@ -261,4 +265,30 @@ class TestRedisKVBackendContract(BackendContract):
 
     @pytest.fixture
     def empty_location(self, backend: KVBackend) -> str:
+        return "staging-no-row"
+
+
+# --- HTTPBackend instantiation (requests-mock) -----------------------------
+class TestHTTPBackendContract(BackendContract):
+    BASE_URL = "https://api.example.com/configs"
+
+    @pytest.fixture
+    def backend(self, requests_mock) -> HTTPBackend:
+        requests_mock.get(
+            f"{self.BASE_URL}/{self.ROLE_NAME}/production",
+            json={"k": "v"},
+            headers={"ETag": '"stable-etag"'},
+        )
+        requests_mock.get(
+            f"{self.BASE_URL}/{self.ROLE_NAME}/staging-no-row",
+            status_code=404,
+        )
+        return HTTPBackend(base_url=self.BASE_URL)
+
+    @pytest.fixture
+    def populated_location(self, backend: HTTPBackend) -> str:
+        return "production"
+
+    @pytest.fixture
+    def empty_location(self, backend: HTTPBackend) -> str:
         return "staging-no-row"

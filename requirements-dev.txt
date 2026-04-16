@@ -6,3 +6,5 @@ ansible-core>=2.15
 sqlalchemy>=2.0
 redis>=5.0
 fakeredis>=2.20
+requests>=2.31
+requests-mock>=1.11

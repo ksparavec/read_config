@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from .base import ConfigBackend
 from .filesystem import FilesystemBackend
+from .http import HTTPBackend
 from .kv_consul import make_consul_backend
 from .kv_etcd import make_etcd_backend
 from .kv_redis import make_redis_backend
@@ -45,3 +46,4 @@ register_backend("sql", SQLBackend)
 register_backend("redis", make_redis_backend)
 register_backend("etcd", make_etcd_backend)
 register_backend("consul", make_consul_backend)
+register_backend("http", HTTPBackend)
