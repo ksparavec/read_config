@@ -1,7 +1,7 @@
 .vscode/
 
 # Ansible collection build artifacts
-devitops-read_config-*.tar.gz
+devitops-ansible-*.tar.gz
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

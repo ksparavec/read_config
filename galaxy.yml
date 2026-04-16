@@ -1,6 +1,6 @@
 ---
 namespace: devitops
-name: read_config
+name: ansible
 version: 1.0.0
 
 readme: README.md

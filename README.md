@@ -1,6 +1,6 @@
-# devitops.read_config — Ansible Collection
+# devitops.ansible — Ansible Collection
 
-The `devitops.read_config` collection ships the `read_config` module: an
+The `devitops.ansible` collection ships the `read_config` module: an
 Ansible module that recursively reads and merges hierarchical role
 configurations from **pluggable storage backends**. Start with YAML/JSON/INI
 files on disk, or fetch the same logical config hierarchy from an SQL
@@ -31,7 +31,7 @@ Build and install locally from a checkout:
 ```bash
 git clone https://github.com/ksparavec/read_config.git
 cd read_config
-make build          # produces devitops-read_config-1.0.0.tar.gz
+make build          # produces devitops-ansible-1.0.0.tar.gz
 make install-local  # installs into ~/.ansible/collections
 ```
 
@@ -39,7 +39,7 @@ Then use via its fully-qualified collection name:
 
 ```yaml
 - name: Read merged role config
-  devitops.read_config.read_config:
+  devitops.ansible.read_config:
     role_name: myrole
     config_dir: /etc/myapp/config
   register: result
@@ -134,7 +134,7 @@ All examples use the fully-qualified collection name.
 
 ```yaml
 - name: Read all YAML configurations
-  devitops.read_config.read_config:
+  devitops.ansible.read_config:
     role_name: testrole
     config_dir: /path/to/config
   register: all_configs
@@ -144,7 +144,7 @@ All examples use the fully-qualified collection name.
 
 ```yaml
 - name: Read from a Postgres role_configs table
-  devitops.read_config.read_config:
+  devitops.ansible.read_config:
     role_name: testrole
     backend: sql
     backend_options:
@@ -159,7 +159,7 @@ All examples use the fully-qualified collection name.
 
 ```yaml
 - name: Read from Redis (key prefix configs/testrole/...)
-  devitops.read_config.read_config:
+  devitops.ansible.read_config:
     role_name: testrole
     backend: redis
     backend_options:
@@ -174,7 +174,7 @@ All examples use the fully-qualified collection name.
 
 ```yaml
 - name: Read merged parameters from a REST API
-  devitops.read_config.read_config:
+  devitops.ansible.read_config:
     role_name: testrole
     backend: http
     backend_options:
@@ -205,7 +205,7 @@ All examples use the fully-qualified collection name.
 
 ```yaml
 - name: Read and validate
-  devitops.read_config.read_config:
+  devitops.ansible.read_config:
     role_name: testrole
     config_dir: /path/to/config
     validate_schema: /path/to/schema.json
@@ -216,7 +216,7 @@ All examples use the fully-qualified collection name.
 
 ```yaml
 - name: Track configuration changes
-  devitops.read_config.read_config:
+  devitops.ansible.read_config:
     role_name: testrole
     config_dir: /path/to/config
     track_changes: true
@@ -228,7 +228,7 @@ All examples use the fully-qualified collection name.
 
 ```yaml
 - name: Preview the merge without reading files
-  devitops.read_config.read_config:
+  devitops.ansible.read_config:
     role_name: testrole
     config_dir: /path/to/config
     dry_run: true

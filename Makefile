@@ -3,7 +3,7 @@ VENV   ?= .venv
 BIN    := $(VENV)/bin
 
 COLLECTION_NAMESPACE := devitops
-COLLECTION_NAME      := read_config
+COLLECTION_NAME      := ansible
 COLLECTION_VERSION   := $(shell awk '/^version:/ {print $$2}' galaxy.yml)
 COLLECTION_TARBALL   := $(COLLECTION_NAMESPACE)-$(COLLECTION_NAME)-$(COLLECTION_VERSION).tar.gz
 COLLECTIONS_PATH     ?= $(HOME)/.ansible/collections

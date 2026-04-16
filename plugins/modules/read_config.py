@@ -153,24 +153,24 @@ import jsonschema
 from ansible.module_utils.basic import AnsibleModule
 
 # Dual-path imports: prefer the collection-installed FQCN so the module works
-# naturally under ``ansible-galaxy collection install devitops.read_config``;
+# naturally under ``ansible-galaxy collection install devitops.ansible``;
 # fall back to a sys.path hack so the subprocess integration tests and direct
 # ``python plugins/modules/read_config.py`` invocations still work from a
 # fresh checkout.
 try:
-    from ansible_collections.devitops.read_config.plugins.module_utils.read_config_core.base import (  # noqa: E501
+    from ansible_collections.devitops.ansible.plugins.module_utils.read_config_core.base import (  # noqa: E501
         MergeEngine,
     )
-    from ansible_collections.devitops.read_config.plugins.module_utils.read_config_core.cache import (  # noqa: E501, F401
+    from ansible_collections.devitops.ansible.plugins.module_utils.read_config_core.cache import (  # noqa: E501, F401
         ConfigCache,
     )
-    from ansible_collections.devitops.read_config.plugins.module_utils.read_config_core.filesystem import (  # noqa: E501, F401
+    from ansible_collections.devitops.ansible.plugins.module_utils.read_config_core.filesystem import (  # noqa: E501, F401
         FilesystemBackend,
         find_directories_with_role_config,
         get_config_file_if_exists,
         validate_path_security,
     )
-    from ansible_collections.devitops.read_config.plugins.module_utils.read_config_core.registry import (  # noqa: E501
+    from ansible_collections.devitops.ansible.plugins.module_utils.read_config_core.registry import (  # noqa: E501
         available_backends,
         get_backend,
     )
