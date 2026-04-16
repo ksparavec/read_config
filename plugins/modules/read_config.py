@@ -77,11 +77,20 @@ options:
     default: false
   backend:
     description:
-      - Storage backend to use. Defaults to C(filesystem). Additional backends
-        may be registered at runtime via C(read_config_core.registry.register_backend).
+      - Storage backend to use. Defaults to C(filesystem). Built-in backends
+        are C(filesystem) and C(sql). Additional backends may be registered
+        at runtime via C(read_config_core.registry.register_backend).
     type: str
     required: false
     default: filesystem
+  backend_options:
+    description:
+      - Backend-specific options passed as keyword arguments to the backend
+        factory. Required for non-filesystem backends (e.g. C(sql) needs C(dsn)).
+      - Ignored by the filesystem backend; use C(config_dir) and C(format) instead.
+    type: dict
+    required: false
+    default: null
 author:
   - "Kresimir Sparavec (@ksparavec)"
 '''
@@ -261,6 +270,7 @@ def run_module() -> None:
             default="filesystem",
             choices=available_backends(),
         ),
+        backend_options=dict(type="dict", required=False, default=None),
     )
 
     result: dict = dict(changed=False, ansible_facts={})
@@ -276,12 +286,23 @@ def run_module() -> None:
         format_type = module.params["format"]
         track_changes = module.params["track_changes"]
         backend_name = module.params["backend"]
+        backend_options = module.params["backend_options"] or {}
 
         # Role-name validation (backend-agnostic).
         if not role_name or not role_name.strip():
             module.fail_json(msg="role_name cannot be empty")
         if os.sep in role_name or "/" in role_name or "\\" in role_name:
             module.fail_json(msg="role_name cannot contain path separators")
+
+        # track_changes is currently filesystem-only; other backends need a
+        # generalized fingerprint store (a future phase).
+        if track_changes and backend_name != "filesystem":
+            module.fail_json(
+                msg=(
+                    f"track_changes is only supported for the filesystem backend "
+                    f"(got backend={backend_name!r})"
+                )
+            )
 
         # Filesystem-specific input validation + backend instantiation.
         if backend_name == "filesystem":
@@ -302,8 +323,13 @@ def run_module() -> None:
             backend, cache, checksum_file = _build_filesystem_backend(
                 config_dir, format_type, track_changes, role_name
             )
-        else:  # pragma: no cover - no non-filesystem backends registered in Phase 1
-            backend = get_backend(backend_name)
+        else:
+            try:
+                backend = get_backend(backend_name, **backend_options)
+            except (TypeError, ValueError) as exc:
+                module.fail_json(
+                    msg=f"Failed to instantiate backend {backend_name!r}: {exc}"
+                )
             cache = None
             checksum_file = None
 

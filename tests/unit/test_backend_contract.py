@@ -27,6 +27,10 @@ import pytest
 from read_config_core.base import ConfigBackend
 from read_config_core.filesystem import FilesystemBackend
 
+sqlalchemy = pytest.importorskip("sqlalchemy")
+
+from read_config_core.sql import SQLBackend  # noqa: E402
+
 
 class BackendContract:
     """Protocol-conformance tests. Subclasses supply backend + locations."""
@@ -179,3 +183,42 @@ class TestFilesystemBackendContract(BackendContract):
     @pytest.fixture
     def invalid_location(self, backend: FilesystemBackend) -> str:
         return str(Path(backend.root).parent)  # outside root => traversal
+
+
+# --- SQLBackend instantiation ----------------------------------------------
+class TestSQLBackendContract(BackendContract):
+    @pytest.fixture
+    def backend(self, tmp_path: Path) -> SQLBackend:
+        db_path = tmp_path / "contract.sqlite"
+        backend = SQLBackend(dsn=f"sqlite:///{db_path}")
+        with backend._engine.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    """
+                    CREATE TABLE role_configs (
+                        role_name TEXT NOT NULL,
+                        location  TEXT NOT NULL,
+                        data      TEXT NOT NULL,
+                        PRIMARY KEY (role_name, location)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO role_configs (role_name, location, data) "
+                    "VALUES (:r, :l, :d)"
+                ),
+                {"r": self.ROLE_NAME, "l": "production", "d": '{"k": "v"}'},
+            )
+        return backend
+
+    @pytest.fixture
+    def populated_location(self, backend: SQLBackend) -> str:
+        return "production"
+
+    @pytest.fixture
+    def empty_location(self, backend: SQLBackend) -> str:
+        return "staging-no-row"
+
+    # SQL backend does not validate target shape; skip invalid_location.

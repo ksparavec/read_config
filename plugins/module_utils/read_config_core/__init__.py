@@ -8,6 +8,7 @@ from .filesystem import (
     validate_path_security,
 )
 from .registry import available_backends, get_backend, register_backend
+from .sql import SQLBackend
 
 __all__ = [
     "ConfigBackend",
@@ -16,6 +17,7 @@ __all__ = [
     "Location",
     "MergeEngine",
     "MergeResult",
+    "SQLBackend",
     "available_backends",
     "find_directories_with_role_config",
     "get_backend",

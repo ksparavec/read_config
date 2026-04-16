@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from .base import ConfigBackend
 from .filesystem import FilesystemBackend
+from .sql import SQLBackend
 
 BackendFactory = Callable[..., ConfigBackend]
 
@@ -34,5 +35,6 @@ def available_backends() -> list[str]:
     return sorted(_REGISTRY)
 
 
-# Seed with the default filesystem backend.
+# Seed with built-in backends.
 register_backend("filesystem", FilesystemBackend)
+register_backend("sql", SQLBackend)
