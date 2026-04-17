@@ -32,7 +32,8 @@ help:
 	@echo "                   (default: $(GALAXY_SERVER))"
 	@echo "                   Requires GALAXY_API_TOKEN in the environment."
 	@echo ""
-	@echo "  clean            Remove caches, coverage, and build artifacts"
+	@echo "  clean            Remove $(VENV), test/lint/type caches, coverage,"
+	@echo "                   and build artifacts"
 
 venv:
 	@if [ ! -x "$(BIN)/python" ]; then \
@@ -90,6 +91,7 @@ publish: build
 	@echo "Published $(COLLECTION_TARBALL) to $(GALAXY_SERVER)"
 
 clean:
-	rm -rf .pytest_cache htmlcov .coverage .coverage.*
+	rm -rf $(VENV) .pytest_cache .mypy_cache .ruff_cache htmlcov .ansible \
+	       .coverage .coverage.*
 	rm -f $(COLLECTION_NAMESPACE)-$(COLLECTION_NAME)-*.tar.gz
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
