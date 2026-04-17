@@ -25,12 +25,35 @@ needed.
 
 Change detection: the server's ``ETag`` header is the native fingerprint
 when present; otherwise we hash the response body.
+
+Security: context string values are rejected if they contain ``{`` or ``}``
+to block format-string gadget attacks. Rendered URLs can optionally be
+pinned to an allowlist of (scheme, host) tuples via ``allowed_hosts``.
 """
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Iterable
+from urllib.parse import urlparse
+
+
+def _sanitize_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Reject context string values that could exploit ``str.format``.
+
+    A value like ``"{__class__.__mro__}"`` or ``"{0.__class__}"`` would let an
+    attacker traverse Python internals or redirect requests to arbitrary hosts
+    when interpolated into URLs/headers. Non-string values are passed through
+    unchanged (they are converted to strings by ``str.format`` itself).
+    """
+    clean: dict[str, Any] = {}
+    for key, value in context.items():
+        if isinstance(value, str) and ("{" in value or "}" in value):
+            raise ValueError(
+                f"context value for {key!r} must not contain '{{' or '}}'"
+            )
+        clean[key] = value
+    return clean
 
 
 @dataclass(frozen=True)
@@ -93,6 +116,7 @@ class HTTPBackend:
         auth: Any = None,
         timeout: float = 10.0,
         verify_tls: bool = True,
+        allowed_hosts: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         try:
             import requests
@@ -114,7 +138,7 @@ class HTTPBackend:
             seen.add(layer.name)
         self._layers: tuple[HTTPLayer, ...] = tuple(coerced)
 
-        self._context: dict[str, Any] = dict(context or {})
+        self._context: dict[str, Any] = _sanitize_context(context or {})
         self._shared_headers: dict[str, str] = dict(headers or {})
         if auth_token:
             prefix = f"{auth_scheme} " if auth_scheme else ""
@@ -123,6 +147,9 @@ class HTTPBackend:
         self._auth = tuple(auth) if isinstance(auth, (list, tuple)) else auth
         self._timeout = timeout
         self._verify_tls = verify_tls
+        self._allowed_hosts: frozenset[str] = (
+            frozenset(allowed_hosts) if allowed_hosts else frozenset()
+        )
         self._requests = requests
         self._cache: dict[tuple, _CacheEntry | None] = {}
 
@@ -133,6 +160,10 @@ class HTTPBackend:
     @property
     def context(self) -> dict[str, Any]:
         return dict(self._context)
+
+    @property
+    def allowed_hosts(self) -> frozenset[str]:
+        return self._allowed_hosts
 
     # --- Protocol methods --------------------------------------------------
     def discover(self, role_name: str) -> Iterable[str]:
@@ -234,6 +265,7 @@ class HTTPBackend:
         headers: dict[str, str],
         layer: HTTPLayer,
     ) -> _CacheEntry | None:
+        self._enforce_allowed_host(url)
         response = self._requests.get(
             url,
             params=params or None,
@@ -292,3 +324,20 @@ class HTTPBackend:
         return template.format(
             role_name=role_name, location=location, **self._context
         )
+
+    def _enforce_allowed_host(self, url: str) -> None:
+        """Block requests to hosts outside the caller-provided allowlist.
+
+        A missing/empty ``allowed_hosts`` means "no allowlist configured" —
+        all hosts are accepted (backwards compatible). Once configured, only
+        hosts (``netloc``) listed are reachable. Case-insensitive match.
+        """
+        if not self._allowed_hosts:
+            return
+        host = (urlparse(url).hostname or "").lower()
+        allowed = {h.lower() for h in self._allowed_hosts}
+        if host not in allowed:
+            raise ValueError(
+                f"host {host!r} not in allowed_hosts {sorted(allowed)}; "
+                f"refusing to fetch {url!r}"
+            )

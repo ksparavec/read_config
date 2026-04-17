@@ -1,7 +1,6 @@
 """End-to-end integration tests: run the module as a real Ansible subprocess."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 

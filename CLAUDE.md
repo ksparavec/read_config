@@ -3,10 +3,20 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Build/Test Commands
-- Run tests: `ansible-playbook -i tests/inventory.ini tests/test_read_config_playbook.yml`
-- Run single test: `ansible-playbook -i tests/inventory.ini tests/test_read_config_playbook.yml -t <tag_name>`
-- Lint Python code: `flake8 plugins/modules/read_config.py`
-- Validate YAML: `yamllint tests/**/*.yml`
+- Primary test runner is pytest. Makefile targets wrap the common flows:
+  - Unit tests: `make test` (≡ `pytest tests/unit`)
+  - Integration (subprocess module invocation): `make integration`
+  - Everything: `make test-all`
+  - Terminal coverage: `make coverage`
+  - HTML coverage: `make coverage-html` → `htmlcov/index.html`
+- Run a single pytest test:
+  `.venv/bin/pytest tests/unit/test_sql_backend.py::test_load_returns_data_for_known_location`
+- Legacy smoke playbook (not part of CI; requires the collection installed on
+  `ANSIBLE_COLLECTIONS_PATH`):
+  `ansible-playbook -i tests/inventory.ini tests/test_read_config_playbook.yml`
+- Lint Python: `ruff check plugins/ tests/` (and `flake8 plugins/`)
+- Lint YAML: `yamllint galaxy.yml meta/runtime.yml tests/test_read_config_playbook.yml`
+- Doc check: `ansible-doc -t module devitops.ansible.read_config`
 
 ## Code Style Guidelines
 - **Python**: 4-space indentation, snake_case for functions/variables

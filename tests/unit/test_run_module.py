@@ -1,7 +1,6 @@
 """Integration-style unit tests for run_module with a mocked AnsibleModule."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 

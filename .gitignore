@@ -3,6 +3,9 @@
 # Ansible collection build artifacts
 devitops-ansible-*.tar.gz
 
+# ansible-playbook cache directory (created when running the legacy smoke playbook)
+.ansible/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

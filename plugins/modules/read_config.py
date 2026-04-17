@@ -44,8 +44,8 @@ options:
     default: null
   config_tag:
     description:
-      - If specified, only return configs whose final merged data includes
-        C(config_tag: <value>).
+      - If specified, only return configs whose final merged data includes a
+        C(config_tag) key equal to this value.
     type: str
     required: false
     default: null
@@ -77,17 +77,21 @@ options:
     default: false
   backend:
     description:
-      - Storage backend to use. Defaults to C(filesystem). Built-in backends
-        are C(filesystem) and C(sql). Additional backends may be registered
-        at runtime via C(read_config_core.registry.register_backend).
+      - Storage backend to use. Built-in backends are C(filesystem), C(sql),
+        C(redis), C(etcd), C(consul), and C(http). Additional backends may be
+        registered at runtime via C(read_config_core.registry.register_backend).
     type: str
     required: false
     default: filesystem
+    choices: [filesystem, sql, redis, etcd, consul, http]
   backend_options:
     description:
       - Backend-specific options passed as keyword arguments to the backend
-        factory. Required for non-filesystem backends (e.g. C(sql) needs C(dsn)).
+        factory. Required for non-filesystem backends (e.g. C(sql) needs C(dsn),
+        C(http) needs C(layers), C(redis) needs C(url)).
       - Ignored by the filesystem backend; use C(config_dir) and C(format) instead.
+      - Marked C(no_log) because this dict typically carries secrets
+        (database passwords in DSNs, HTTP auth tokens, Basic auth credentials).
     type: dict
     required: false
     default: null
@@ -249,8 +253,18 @@ def find_role_vars_dir(role_name: str) -> str | None:
 
 
 def validate_against_schema(data: dict, schema_path: str) -> bool:
-    """Validate ``data`` against the JSON schema at ``schema_path``."""
+    """Validate ``data`` against the JSON schema at ``schema_path``.
+
+    The schema path is treated as operator-supplied trusted input (typically a
+    JSON file shipped inside a role's ``files/`` directory). We refuse to read
+    anything that is not a regular file so a symlink-to-pipe or symlink-to-
+    device-node cannot cause the module to block or hang.
+    """
     try:
+        if not os.path.isfile(schema_path):
+            raise ValueError(
+                f"schema file not found or not a regular file: {schema_path}"
+            )
         with open(schema_path, "r") as f:
             schema = json.load(f)
         jsonschema.validate(instance=data, schema=schema)
@@ -292,7 +306,10 @@ def run_module() -> None:
             default="filesystem",
             choices=available_backends(),
         ),
-        backend_options=dict(type="dict", required=False, default=None),
+        # no_log=True: backend_options typically carries secrets (SQL DSN
+        # passwords, auth_token, redis URL with password, Basic auth). Without
+        # this, verbose Ansible runs log credentials in plaintext.
+        backend_options=dict(type="dict", required=False, default=None, no_log=True),
     )
 
     result: dict = dict(changed=False, ansible_facts={})

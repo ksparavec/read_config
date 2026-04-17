@@ -129,7 +129,7 @@
 
     # Test basic functionality with different formats
     - name: Test YAML format
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         format: yaml
@@ -144,7 +144,7 @@
           - yaml_configs.ansible_facts.read_config.configs | length == 4
 
     - name: Test JSON format
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         format: json
@@ -159,7 +159,7 @@
           - json_configs.ansible_facts.read_config.configs | length == 2
 
     - name: Test INI format
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         format: ini
@@ -175,7 +175,7 @@
 
     # Test config_path parameter
     - name: Test specific config path
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         config_path: subfolder2
@@ -188,11 +188,11 @@
           - path_configs.ansible_facts.read_config.mode == 'single'
           - path_configs.ansible_facts.read_config.matched_count == 1
           - path_configs.ansible_facts.read_config.configs is defined
-          - 'subfolder2' in path_configs.ansible_facts.read_config.configs
+          - "'subfolder2' in path_configs.ansible_facts.read_config.configs"
 
     # Test config_tag parameter
     - name: Test config tag filtering
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         config_tag: production
@@ -209,7 +209,7 @@
 
     # Test schema validation
     - name: Test schema validation
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         format: yaml
@@ -224,7 +224,7 @@
 
     # Test change tracking
     - name: Test change tracking
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         track_changes: true
@@ -240,7 +240,7 @@
 
     # Test dry run
     - name: Test dry run
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         dry_run: true
@@ -255,7 +255,7 @@
 
     # Test combined features
     - name: Test combined features
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         format: yaml
@@ -275,7 +275,7 @@
 
     # Test edge cases and error conditions
     - name: Test invalid role name
-      read_config:
+      devitops.ansible.read_config:
         role_name: "test/role"
         config_dir: config
       register: invalid_role_result
@@ -285,10 +285,10 @@
       assert:
         that:
           - invalid_role_result.failed is true
-          - "'role_name cannot contain path separators'" in invalid_role_result.msg
+          - '"role_name cannot contain path separators" in invalid_role_result.msg'
 
     - name: Test path traversal attempt
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         config_path: "../../etc"
@@ -299,10 +299,10 @@
       assert:
         that:
           - path_traversal_result.failed is true
-          - "Path traversal detected" in path_traversal_result.msg
+          - '"Path traversal detected" in path_traversal_result.msg'
 
     - name: Test non-existent directory
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: /nonexistent/dir
       register: nonexistent_dir_result
@@ -312,10 +312,10 @@
       assert:
         that:
           - nonexistent_dir_result.failed is true
-          - "Configuration directory does not exist" in nonexistent_dir_result.msg
+          - '"Configuration directory does not exist" in nonexistent_dir_result.msg'
 
     - name: Test invalid schema
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         validate_schema: config/invalid_schema.json
@@ -328,7 +328,7 @@
           - invalid_schema_result.failed is true
 
     - name: Test invalid format
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         format: invalid
@@ -341,7 +341,7 @@
           - invalid_format_result.failed is true
 
     - name: Test empty config file
-      read_config:
+      devitops.ansible.read_config:
         role_name: empty
         config_dir: config
       register: empty_config_result
@@ -352,7 +352,7 @@
           - empty_config_result.ansible_facts.read_config.matched_count == 0
 
     - name: Test invalid config file
-      read_config:
+      devitops.ansible.read_config:
         role_name: invalid
         config_dir: config
       register: invalid_config_result
@@ -365,7 +365,7 @@
 
     # Test change tracking edge cases
     - name: Test change tracking with no changes
-      read_config:
+      devitops.ansible.read_config:
         role_name: testrole
         config_dir: config
         track_changes: true

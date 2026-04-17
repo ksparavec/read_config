@@ -253,6 +253,10 @@ All examples use the fully-qualified collection name.
     backend_options:
       auth_token: "{{ api_token }}"
       timeout: 10
+      # Optional allowlist: refuse to fetch from any host not in this list.
+      # Defense-in-depth against template/context injection redirecting
+      # requests to an attacker-controlled endpoint.
+      allowed_hosts: ["api.example.com"]
       context:
         organization_id: 3
         host_id: 42
@@ -425,21 +429,39 @@ changed: true                # only when track_changes is true and anything drif
 
 ## Security
 
-- Filesystem backend: every resolved path must lie inside `config_dir`.
-  Path-traversal attempts (`..` segments, symlinks pointing outside the
-  root) raise `ValueError`.
-- Role names may not contain path separators (`/`, `\`, `os.sep`).
-- SQL backend validates table / column / separator identifiers against a
-  strict regex to rule out SQL injection via configuration.
-- All network backends (SQL, Redis, etcd, Consul, HTTP) should run via
-  `delegate_to: localhost` unless the target host actually needs to reach
-  the backend directly.
-- `validate_schema` catches structurally-invalid merged configs before they
-  are consumed downstream.
+- **Secrets are never logged.** `backend_options` carries DSNs, auth tokens,
+  and Basic-auth credentials; the argument spec marks it `no_log=True`, so
+  Ansible redacts the entire dict from task logs, callbacks, and
+  `--verbose` output.
+- **Filesystem path traversal:** every resolved path must lie inside
+  `config_dir`. Traversal attempts (`..` segments, symlinks pointing
+  outside the root) raise `ValueError`.
+- **Role-name hygiene:** role names may not contain path separators
+  (`/`, `\`, `os.sep`).
+- **SQL injection:** the SQL backend validates table / column / separator
+  identifiers against a strict regex before interpolation, and runtime
+  values (`role_name`, `location`) use SQLAlchemy bound parameters. The
+  `dsn` property returns SQLAlchemy's password-redacted URL form, so it
+  is safe to surface in error/debug output.
+- **HTTP SSRF & template injection:**
+  - Context values containing `{` or `}` are rejected at construction time
+    to block Python format-string gadgets (e.g.
+    `{__class__.__mro__}`).
+  - Configure `allowed_hosts: [...]` in `backend_options` to pin outbound
+    requests to a hostname allowlist. Requests to any other host fail
+    before the wire call.
+  - `verify_tls` is `True` by default.
+- **Schema files:** `validate_schema` rejects non-regular-file paths (no
+  FIFOs/devices) and catches structurally-invalid merged configs before
+  they are consumed downstream.
+- **Delegate network backends:** SQL / Redis / etcd / Consul / HTTP
+  typically run against a central store reachable from the controller,
+  not each target host. Use `delegate_to: localhost` unless the target
+  host actually needs to reach the backend directly.
 
 ## Development and testing
 
-The repo has a pytest-based test suite (326 tests, ~96% coverage) plus a
+The repo has a pytest-based test suite (342 tests, ~96% coverage) plus a
 subprocess-based integration suite that invokes the module as a real
 Ansible subprocess.
 

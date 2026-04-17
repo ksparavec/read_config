@@ -73,7 +73,19 @@ class SQLBackend:
 
     @property
     def dsn(self) -> str:
-        return str(self._engine.url)
+        """Return the DSN with the password redacted.
+
+        ``str(engine.url)`` embeds the plaintext password, which is a leak
+        risk any time this property is surfaced in a log or error message.
+        SQLAlchemy exposes ``URL.render_as_string(hide_password=True)`` for
+        the redacted form; fall back to the legacy stringification if that
+        method is ever unavailable.
+        """
+        url = self._engine.url
+        render = getattr(url, "render_as_string", None)
+        if callable(render):
+            return render(hide_password=True)
+        return str(url)  # pragma: no cover - legacy SQLAlchemy
 
     @property
     def table(self) -> str:
