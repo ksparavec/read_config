@@ -215,3 +215,9 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# live backend suite: readiness timestamp written by tests/live/containers.sh
+tests/live/.ready_at
+
+# live backend suite: persistent PostgreSQL data directory
+tests/live/.pgdata/

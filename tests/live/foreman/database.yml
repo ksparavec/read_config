@@ -1,0 +1,12 @@
+# Points the Foreman container at the suite's PostgreSQL service. The image
+# ships a database.yml with no host, which resolves to a unix socket that does
+# not exist in a split-container setup.
+production:
+  adapter: postgresql
+  host: pg
+  port: 5432
+  database: foreman
+  username: foreman
+  password: foreman
+  encoding: utf8
+  pool: 10

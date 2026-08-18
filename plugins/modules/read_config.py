@@ -11,15 +11,16 @@ description:
     recursively scans a directory for YAML, JSON, or INI files named "<role_name>.<ext>"
     and produces one merged config per directory holding a matching file. Parent
     configs are merged first, then each child overrides along the path.
-  - Additional backends (SQL, key-value stores, HTTP APIs, etc.) can be registered
-    via C(read_config_core.registry.register_backend) and selected with the
-    C(backend) option.
+  - Additional backends can be added by calling
+    C(read_config_core.registry.register_backend) before this module builds its
+    argument spec; the C(backend) choices are computed from the registry at that
+    point, so a backend registered later cannot be selected.
   - If no config_path is specified, multiple configs are returned in
     C(ansible_facts.read_config.configs). If config_path is specified, only that
     location's merged config is returned.
   - An optional parameter C(config_tag) filters out configs whose final merged
     data does not include a matching C(config_tag) key/value.
-version_added: "2.0.0"
+version_added: "1.0.0"
 options:
   role_name:
     description:
@@ -30,15 +31,24 @@ options:
   config_dir:
     description:
       - Filesystem backend only. Top-level directory to search recursively for
-        configuration files. Must exist and be readable. If omitted, the module
-        attempts to locate the role's vars directory via C(ANSIBLE_CONFIG).
+        configuration files. Must exist and be readable.
+      - If omitted, the module looks for an ansible.cfg via C(ANSIBLE_CONFIG),
+        then C($ANSIBLE_HOME/ansible.cfg), then C($HOME/ansible.cfg), reads
+        C(defaults.roles_path) from it, and uses the first
+        C(<roles_path>/<role_name>/vars) directory that exists. This is a
+        narrower search than ansible-core's own config precedence; passing
+        config_dir explicitly is more predictable.
     type: path
     required: false
   config_path:
     description:
-      - If specified, only return the merged config for that specific location
-        (absolute or relative to config_dir for the filesystem backend). The
-        target must be within the backend's root.
+      - If specified, only return the merged config for that specific location.
+      - For the filesystem backend this must be an ABSOLUTE path inside
+        config_dir. A relative value is resolved against the working directory
+        of the Ansible process, not against config_dir, and will normally fail
+        as a path-traversal attempt.
+      - For SQL and key-value backends this is a separator-delimited location.
+      - For the API backend this is a layer name.
     type: str
     required: false
     default: null
@@ -51,13 +61,22 @@ options:
     default: null
   dry_run:
     description:
-      - If true, report which sources would be merged without loading them.
+      - If true, report which sources would contribute to the merge without
+        merging them. Every returned config has an empty C(data) dict and a
+        populated C(meta.files_merged) list.
+      - Schema validation and change tracking are both skipped.
+      - Non-filesystem backends still query the store to test existence, so a
+        dry run is not free against a remote backend.
     type: bool
     required: false
     default: false
   validate_schema:
     description:
       - Optional JSON schema file path to validate merged configurations against.
+      - Applied to every merged config BEFORE config_tag filtering, so a config
+        that would have been filtered out can still fail the task.
+      - Skipped entirely when dry_run is true.
+      - The path must be a regular file.
     type: str
     required: false
     default: null
@@ -70,28 +89,62 @@ options:
     choices: [yaml, json, ini]
   track_changes:
     description:
-      - Filesystem backend only. If true, track configuration changes between runs
-        using a per-role checksum file in config_dir.
+      - Filesystem backend only; fails the task on any other backend.
+      - Writes a checksum file named C(.<role_name>_checksums.json) INTO
+        config_dir, which must therefore be writable.
+      - The first run always reports changed, because no previous checksum file
+        exists to compare against.
+      - Not honored in check mode - the checksum file is written even under
+        --check.
     type: bool
     required: false
     default: false
   backend:
     description:
       - Storage backend to use. Built-in backends are C(filesystem), C(sql),
-        C(redis), C(etcd), C(consul), and C(http). Additional backends may be
+        C(redis), C(etcd), C(consul), and C(api). Additional backends may be
         registered at runtime via C(read_config_core.registry.register_backend).
     type: str
     required: false
     default: filesystem
-    choices: [filesystem, sql, redis, etcd, consul, http]
+    choices: [filesystem, sql, redis, etcd, consul, api]
   backend_options:
     description:
-      - Backend-specific options passed as keyword arguments to the backend
-        factory. Required for non-filesystem backends (e.g. C(sql) needs C(dsn),
-        C(http) needs C(layers), C(redis) needs C(url)).
-      - Ignored by the filesystem backend; use C(config_dir) and C(format) instead.
-      - Marked C(no_log) because this dict typically carries secrets
-        (database passwords in DSNs, HTTP auth tokens, Basic auth credentials).
+      - Structural, non-secret options passed as keyword arguments to the
+        backend factory. Ignored by the filesystem backend; use C(config_dir)
+        and C(format) instead.
+      - C(sql) - table, role_column, location_column, data_column, separator.
+      - C(redis) - prefix, separator, plus any redis.from_url kwargs.
+      - C(etcd) - host, port, prefix, separator, plus any etcd3.client kwargs.
+        Note host/port, NOT url.
+      - C(consul) - host, port, prefix, separator, plus any consul.Consul
+        kwargs. Note host/port, NOT url.
+      - C(api) - layers and/or api (a preset name) plus base_url,
+        preset_options, excludes, headers, auth_header, auth_scheme, timeout,
+        verify_tls, allowed_hosts.
+      - For C(api), any OTHER key is treated as a template value and
+        substituted into the layer URLs, query parameters, and headers, so
+        entity ids are passed directly, e.g. an option named C(host_id).
+      - Every configured layer is fetched by default; name the ones you do not
+        want in C(excludes). A layer whose template needs a value you did not
+        supply is an error, and so is supplying a value no layer references -
+        which catches a misspelled option name.
+      - Put credentials in C(backend_secrets), never here. This option is
+        deliberately not C(no_log) so that structural values cannot corrupt
+        the returned configuration.
+    type: dict
+    required: false
+    default: null
+  backend_secrets:
+    description:
+      - Credentials for the backend, merged over C(backend_options) before the
+        backend factory is called. Marked C(no_log).
+      - C(sql) - dsn.
+      - C(redis) - url (which carries the password).
+      - C(api) - auth_token, or auth as a [user, password] pair.
+      - C(etcd) / C(consul) - any credential kwargs the client accepts
+        (e.g. C(token) for Consul).
+      - A key may not appear in both C(backend_options) and C(backend_secrets).
     type: dict
     required: false
     default: null
@@ -101,31 +154,173 @@ author:
 
 EXAMPLES = r'''
 - name: Read all role configs for testrole from /path/to/config
-  read_config:
+  devitops.ansible.read_config:
     role_name: testrole
     config_dir: /path/to/config
   register: all_configs
 
-- name: Read only subfolder2 config
-  read_config:
+# config_path must be ABSOLUTE for the filesystem backend; a relative value
+# resolves against the process working directory, not config_dir.
+- name: Read only the production subtree
+  devitops.ansible.read_config:
     role_name: testrole
     config_dir: /path/to/config
-    config_path: subfolder2
+    config_path: /path/to/config/production
   register: single_config
 
 - name: Read all configs but only those tagged 'production'
-  read_config:
+  devitops.ansible.read_config:
     role_name: testrole
     config_dir: /path/to/config
     config_tag: production
   register: prod_configs
+
+- name: Validate against a JSON schema and report drift
+  devitops.ansible.read_config:
+    role_name: testrole
+    config_dir: /path/to/config
+    validate_schema: "{{ role_path }}/files/testrole.schema.json"
+    track_changes: true
+  register: checked_configs
+
+- name: Read from a SQL table
+  devitops.ansible.read_config:
+    role_name: testrole
+    backend: sql
+    backend_options:
+      table: role_configs
+    backend_secrets:
+      dsn: "postgresql+psycopg://user:pass@db.example.com/appdb"
+    config_path: "global/production/web"
+  register: sql_configs
+  delegate_to: localhost
+
+- name: Read from Redis
+  devitops.ansible.read_config:
+    role_name: testrole
+    backend: redis
+    backend_options:
+      prefix: configs
+    backend_secrets:
+      url: "redis://:secret@redis.example.com:6379/0"
+    config_path: "global/production"
+  register: redis_configs
+  delegate_to: localhost
+
+- name: Read from etcd (host/port, not url)
+  devitops.ansible.read_config:
+    role_name: testrole
+    backend: etcd
+    backend_options:
+      host: etcd.example.com
+      port: 2379
+      prefix: configs
+    config_path: "global/production"
+  register: etcd_configs
+  delegate_to: localhost
+
+- name: Read from Consul KV (host/port, not url)
+  devitops.ansible.read_config:
+    role_name: testrole
+    backend: consul
+    backend_options:
+      host: consul.example.com
+      port: 8500
+      prefix: configs
+    backend_secrets:
+      token: "{{ consul_token }}"
+    config_path: "global/production"
+  register: consul_configs
+  delegate_to: localhost
+
+- name: Read merged parameters from Foreman using the shipped preset
+  devitops.ansible.read_config:
+    role_name: testrole
+    backend: api
+    backend_options:
+      api: foreman
+      base_url: https://foreman.example.com
+      allowed_hosts: ["foreman.example.com"]
+      # The adapter reads this host once and builds the chain from the
+      # organization, location, domain, subnet and hostgroup it belongs to.
+      host: "{{ inventory_hostname }}"
+    backend_secrets:
+      auth: ["admin", "{{ foreman_password }}"]
+    config_path: host
+  register: foreman_configs
+  delegate_to: localhost
+
+- name: Read merged variables from AWX / Ansible Tower
+  devitops.ansible.read_config:
+    role_name: testrole
+    backend: api
+    backend_options:
+      api: awx
+      base_url: https://awx.example.com
+      allowed_hosts: ["awx.example.com"]
+      host: "{{ inventory_hostname }}"
+    backend_secrets:
+      auth_token: "{{ awx_oauth_token }}"
+    config_path: host
+  register: awx_configs
+  delegate_to: localhost
+
+- name: Read the rendered NetBox config context for a device
+  devitops.ansible.read_config:
+    role_name: testrole
+    backend: api
+    backend_options:
+      api: netbox
+      base_url: https://netbox.example.com
+      allowed_hosts: ["netbox.example.com"]
+      host: "{{ inventory_hostname }}"
+    backend_secrets:
+      auth_token: "{{ netbox_token }}"
+    config_path: device        # or virtual_machine
+  register: netbox_configs
+  delegate_to: localhost
+
+# config_path names a LAYER for the api backend. Every configured layer is
+# fetched unless named in excludes.
+- name: Read merged parameters from a layered REST API
+  devitops.ansible.read_config:
+    role_name: testrole
+    backend: api
+    backend_secrets:
+      auth_token: "{{ api_token }}"
+    backend_options:
+      allowed_hosts: ["api.example.com"]
+      organization_id: 3
+      host_id: 42
+      layers:
+        - name: organization
+          url: "https://api.example.com/v1/organizations/{organization_id}/parameters"
+          data_path: results
+          list_name_key: name
+        - name: host
+          url: "https://api.example.com/v1/hosts/{host_id}/parameters"
+          data_path: results
+          list_name_key: name
+    config_path: host
+  register: http_configs
+  delegate_to: localhost
 '''
 
 RETURN = r'''
 ansible_facts:
   description:
-    - Returns a standardized structure with mode, configs, and matched_count.
-    - When track_changes is enabled, includes changed_files list.
+    - Returns a dict under the C(read_config) key with C(mode), C(configs),
+      and C(matched_count).
+    - C(mode) is C(single) when config_path was given, C(multiple) otherwise.
+    - C(configs) is keyed by location identifier. Each entry has
+      C(meta.files_merged) (ordered provenance, lowest precedence first) and
+      C(data) (the merged payload; empty when dry_run is true).
+    - C(matched_count) is the number of entries in C(configs) after config_tag
+      filtering, and is 0 when nothing matched or nothing was discovered.
+    - C(changed_files) is present only when track_changes is true AND at least
+      one source changed.
+    - For the api backend, multi-mode returns exactly one entry, keyed by the
+      deepest applicable layer name.
   type: dict
   returned: always
   sample:
@@ -139,10 +334,14 @@ ansible_facts:
           data:
             key1: val1
       matched_count: 1
+      changed_files:
+        - "/absolute/path/to/config/testrole.yaml"
 changed:
   description:
-    - Whether any configuration sources have changed since the last run.
-    - Only set when track_changes is enabled.
+    - Whether any configuration sources changed since the last run.
+    - Only ever true when track_changes is enabled. The first run always
+      reports true because there is no previous checksum file.
+    - Reported even in check mode, and the checksum file is written anyway.
   type: bool
   returned: when track_changes is true
   sample: true
@@ -306,10 +505,16 @@ def run_module() -> None:
             default="filesystem",
             choices=available_backends(),
         ),
-        # no_log=True: backend_options typically carries secrets (SQL DSN
-        # passwords, auth_token, redis URL with password, Basic auth). Without
-        # this, verbose Ansible runs log credentials in plaintext.
-        backend_options=dict(type="dict", required=False, default=None, no_log=True),
+        # Structural options only. Deliberately NOT no_log: Ansible implements
+        # no_log by substring-scrubbing every string and number it contains
+        # from the module's output, which corrupts the returned configuration
+        # (a context id of 5 turns every value containing a "5" into a
+        # sentinel). Secrets go in backend_secrets instead.
+        backend_options=dict(type="dict", required=False, default=None, no_log=False),
+        # Credentials only. no_log=True keeps these out of verbose output and
+        # callbacks; keeping them separate means the redaction cannot reach
+        # structural values or the merged config.
+        backend_secrets=dict(type="dict", required=False, default=None, no_log=True),
     )
 
     result: dict = dict(changed=False, ansible_facts={})
@@ -326,6 +531,16 @@ def run_module() -> None:
         track_changes = module.params["track_changes"]
         backend_name = module.params["backend"]
         backend_options = module.params["backend_options"] or {}
+        backend_secrets = module.params["backend_secrets"] or {}
+        overlap = set(backend_options) & set(backend_secrets)
+        if overlap:
+            module.fail_json(
+                msg=(
+                    "the same key may not appear in both backend_options and "
+                    f"backend_secrets: {sorted(overlap)}"
+                )
+            )
+        backend_kwargs = {**backend_options, **backend_secrets}
 
         # Role-name validation (backend-agnostic).
         if not role_name or not role_name.strip():
@@ -364,7 +579,7 @@ def run_module() -> None:
             )
         else:
             try:
-                backend = get_backend(backend_name, **backend_options)
+                backend = get_backend(backend_name, **backend_kwargs)
             except (TypeError, ValueError) as exc:
                 module.fail_json(
                     msg=f"Failed to instantiate backend {backend_name!r}: {exc}"

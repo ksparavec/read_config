@@ -1,0 +1,6 @@
+{"results": [
+  {"name": "listen_port", "value": 8080},
+  {"name": "workers", "value": 2},
+  {"name": "log_level", "value": "info"},
+  {"name": "database", "value": {"pool_size": 10, "host": "db.default.internal"}}
+]}

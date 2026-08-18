@@ -107,6 +107,16 @@ or accept them silently (current). Lock it in with the existing mixin.
 
 ## Security
 
+### 0. Fix `no_log` over-redaction of `backend_options` — **DONE**
+
+Shipped in Unreleased. `backend_options` is no longer `no_log`; credentials
+moved to a new `backend_secrets` option. Ansible's `no_log` substring-scrubs
+every string *and number* in the marked value out of the module output, so a
+numeric context id of `5` was turning `5`, `50`, and `8500` into
+`VALUE_SPECIFIED_IN_NO_LOG_PARAMETER` and changing their type. Found by the
+live suite; pinned by
+`tests/live/test_live_module.py::test_numeric_context_ids_do_not_corrupt_numeric_config`.
+
 ### 11. Optional `schema_dir` allowlist for `validate_schema` — _small_
 
 Constrain `validate_schema` paths to live under `config_dir` (or an

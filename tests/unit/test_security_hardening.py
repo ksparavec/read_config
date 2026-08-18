@@ -3,7 +3,7 @@
 Covers:
 * ``no_log=True`` on the ``backend_options`` argument spec.
 * ``track_changes=True`` rejection when the active backend isn't filesystem.
-* HTTP context sanitization (format-string gadget rejection).
+* API template-value sanitization (format-string gadget rejection).
 * HTTP ``allowed_hosts`` gate on outbound requests.
 * ``SQLBackend.dsn`` password redaction.
 * ``validate_against_schema`` rejects non-regular-file paths.
@@ -15,43 +15,52 @@ from pathlib import Path
 
 import pytest
 
-from read_config_core.http import HTTPBackend
+from read_config_core.api import ApiBackend
 
 
-# --- no_log on backend_options ---------------------------------------------
-def test_backend_options_argument_spec_has_no_log(read_config_module) -> None:
-    """Introspect run_module to assert backend_options carries no_log=True.
+# --- no_log placement -------------------------------------------------------
+def _argument_spec_no_log(read_config_module) -> dict:
+    """Return {option_name: no_log literal} from the module_args dict.
 
-    We can't rely on grepping the source (brittle); instead, call the real
-    AnsibleModule argument-spec machinery with a backend_options dict and
-    verify the parameter is marked no_log. The ``_VALID_ARGS`` attribute on
-    ``AnsibleModule`` doesn't expose no_log, so we inspect the argument_spec
-    definition directly by reading the dict from the module source via a
-    lightweight AST walk.
+    Read straight from the source: AnsibleModule does not expose no_log on the
+    built parameter set, so an AST walk over the argument-spec literal is the
+    only faithful way to assert on it.
     """
     import ast
 
     source = Path(read_config_module.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-
-    found = False
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "dict"
+    for node in ast.walk(ast.parse(source)):
+        if not (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "module_args"
+                    for t in node.targets)
         ):
-            # Look for backend_options=dict(..., no_log=True, ...). We
-            # identify the right call by searching kwargs for no_log + a
-            # sibling ``type="dict"`` kwarg (argument spec shape).
-            kwargs = {kw.arg: kw.value for kw in node.keywords}
-            if "no_log" in kwargs and kwargs.get("type") and isinstance(
-                kwargs["type"], ast.Constant
-            ) and kwargs["type"].value == "dict":
-                no_log = kwargs["no_log"]
-                assert isinstance(no_log, ast.Constant) and no_log.value is True
-                found = True
-    assert found, "backend_options argument_spec must declare no_log=True"
+            continue
+        spec = {}
+        for kw in node.value.keywords:
+            inner = {k.arg: k.value for k in kw.value.keywords}
+            flag = inner.get("no_log")
+            spec[kw.arg] = flag.value if isinstance(flag, ast.Constant) else None
+        return spec
+    raise AssertionError("module_args argument spec not found")
+
+
+def test_backend_secrets_is_marked_no_log(read_config_module) -> None:
+    """Credentials must stay out of verbose output and callbacks."""
+    assert _argument_spec_no_log(read_config_module)["backend_secrets"] is True
+
+
+def test_backend_options_is_not_marked_no_log(read_config_module) -> None:
+    """Structural options must NOT be no_log.
+
+    Ansible implements no_log by substring-scrubbing every string and number in
+    the marked value out of the module's output. Marking backend_options would
+    therefore corrupt the returned configuration: a numeric context id of 5
+    turns every config value containing a "5" into a sentinel and changes its
+    type. Secrets belong in backend_secrets, which is scoped to actual
+    credentials.
+    """
+    assert _argument_spec_no_log(read_config_module)["backend_options"] is False
 
 
 # --- track_changes + non-filesystem backend --------------------------------
@@ -74,47 +83,58 @@ def test_track_changes_rejected_for_non_filesystem_backend(
     )
 
 
-# --- HTTP context sanitization ---------------------------------------------
-def test_http_backend_rejects_format_gadget_in_context() -> None:
+# --- template value sanitization -------------------------------------------
+def test_api_backend_rejects_format_gadget_in_a_template_value() -> None:
     with pytest.raises(ValueError, match=r"must not contain '\{' or '\}'"):
-        HTTPBackend(
-            layers=[{"name": "x", "url": "https://example.com/x"}],
-            context={"evil": "{0.__class__.__mro__}"},
+        ApiBackend(
+            layers=[{"name": "x", "url": "https://example.com/{evil}"}],
+            evil="{0.__class__.__mro__}",
         )
 
 
-def test_http_backend_rejects_closing_brace_in_context() -> None:
+def test_api_backend_rejects_closing_brace_in_a_template_value() -> None:
     with pytest.raises(ValueError, match=r"must not contain"):
-        HTTPBackend(
-            layers=[{"name": "x", "url": "https://example.com/x"}],
-            context={"nested": "value}"},
+        ApiBackend(
+            layers=[{"name": "x", "url": "https://example.com/{nested}"}],
+            nested="value}",
         )
 
 
-def test_http_backend_accepts_non_string_context() -> None:
+def test_api_backend_accepts_non_string_template_values() -> None:
     # Ints, bools, etc. don't carry format tokens themselves — accept them.
-    backend = HTTPBackend(
+    backend = ApiBackend(
         layers=[{"name": "x", "url": "https://example.com/x/{host_id}"}],
-        context={"host_id": 42},
+        host_id=42,
     )
 
-    assert backend.context == {"host_id": 42}
+    assert backend.template_vars == {"host_id": 42}
 
 
-def test_http_backend_accepts_plain_strings_in_context() -> None:
-    backend = HTTPBackend(
+def test_api_backend_accepts_plain_strings_as_template_values() -> None:
+    backend = ApiBackend(
         layers=[{"name": "x", "url": "https://example.com/{org}/x"}],
-        context={"org": "acme-corp"},
+        org="acme-corp",
     )
 
-    assert backend.context == {"org": "acme-corp"}
+    assert backend.template_vars == {"org": "acme-corp"}
+
+
+def test_a_value_no_layer_references_is_rejected() -> None:
+    """Typo protection: an unused option cannot pass as a template variable."""
+    with pytest.raises(ValueError, match="match no placeholder") as exc:
+        ApiBackend(
+            layers=[{"name": "x", "url": "https://example.com/{host_id}"}],
+            hostt_id=42,
+        )
+
+    assert "host_id" in str(exc.value)
 
 
 # --- HTTP allowed_hosts gate ------------------------------------------------
 def test_http_allowed_hosts_blocks_external_host(requests_mock) -> None:
     """An URL that resolves outside the allowlist must fail before the call."""
     requests_mock.get("https://evil.example.com/x", json={"k": "v"})
-    backend = HTTPBackend(
+    backend = ApiBackend(
         layers=[{"name": "x", "url": "https://evil.example.com/x"}],
         allowed_hosts=["api.example.com"],
     )
@@ -127,7 +147,7 @@ def test_http_allowed_hosts_blocks_external_host(requests_mock) -> None:
 
 def test_http_allowed_hosts_permits_listed_host(requests_mock) -> None:
     requests_mock.get("https://api.example.com/x", json={"k": "v"})
-    backend = HTTPBackend(
+    backend = ApiBackend(
         layers=[{"name": "x", "url": "https://api.example.com/x"}],
         allowed_hosts=["api.example.com"],
     )
@@ -137,7 +157,7 @@ def test_http_allowed_hosts_permits_listed_host(requests_mock) -> None:
 
 def test_http_allowed_hosts_case_insensitive(requests_mock) -> None:
     requests_mock.get("https://API.example.com/x", json={"k": "v"})
-    backend = HTTPBackend(
+    backend = ApiBackend(
         layers=[{"name": "x", "url": "https://API.example.com/x"}],
         allowed_hosts=["api.example.com"],
     )
@@ -148,7 +168,7 @@ def test_http_allowed_hosts_case_insensitive(requests_mock) -> None:
 def test_http_no_allowlist_permits_all_hosts(requests_mock) -> None:
     """Backwards compatibility: no allowlist means no restriction."""
     requests_mock.get("https://anywhere.example.net/x", json={"k": "v"})
-    backend = HTTPBackend(
+    backend = ApiBackend(
         layers=[{"name": "x", "url": "https://anywhere.example.net/x"}],
     )
 
@@ -156,7 +176,7 @@ def test_http_no_allowlist_permits_all_hosts(requests_mock) -> None:
 
 
 def test_http_allowed_hosts_exposed_as_property() -> None:
-    backend = HTTPBackend(
+    backend = ApiBackend(
         layers=[{"name": "x", "url": "https://api.example.com/x"}],
         allowed_hosts=["api.example.com", "api-staging.example.com"],
     )

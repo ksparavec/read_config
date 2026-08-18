@@ -1,0 +1,5 @@
+{"results": [
+  {"name": "workers", "value": 8},
+  {"name": "hostname", "value": "web01.eu-west.internal"},
+  {"name": "database", "value": {"pool_size": 50}}
+]}

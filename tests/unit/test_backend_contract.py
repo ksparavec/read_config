@@ -52,7 +52,7 @@ from read_config_core.kv_redis import RedisKVClient  # noqa: E402
 
 requests_mock_pkg = pytest.importorskip("requests_mock")
 
-from read_config_core.http import HTTPBackend  # noqa: E402
+from read_config_core.api import ApiBackend  # noqa: E402
 
 
 class BackendContract:
@@ -293,8 +293,8 @@ class TestRedisKVBackendContract(BackendContract, ContentAwareDiscoveryContract)
         return "staging-no-row"
 
 
-# --- HTTPBackend instantiation (requests-mock) -----------------------------
-class TestHTTPBackendContract(BackendContract, ValidatesTargetsContract):
+# --- ApiBackend instantiation (requests-mock) -----------------------------
+class TestApiBackendContract(BackendContract, ValidatesTargetsContract):
     """HTTP discovery is structural (layer list), not content-aware — so this
     subclass does not include ``ContentAwareDiscoveryContract``. Targets are
     validated (unknown layer name → ValueError), so the targets mixin applies.
@@ -303,7 +303,7 @@ class TestHTTPBackendContract(BackendContract, ValidatesTargetsContract):
     BASE_URL = "https://api.example.com"
 
     @pytest.fixture
-    def backend(self, requests_mock) -> HTTPBackend:
+    def backend(self, requests_mock) -> ApiBackend:
         requests_mock.get(
             f"{self.BASE_URL}/populated",
             json={"k": "v"},
@@ -313,7 +313,7 @@ class TestHTTPBackendContract(BackendContract, ValidatesTargetsContract):
             f"{self.BASE_URL}/empty",
             status_code=404,
         )
-        return HTTPBackend(
+        return ApiBackend(
             layers=[
                 {"name": "production", "url": f"{self.BASE_URL}/populated"},
                 {"name": "staging-no-row", "url": f"{self.BASE_URL}/empty"},
@@ -321,13 +321,13 @@ class TestHTTPBackendContract(BackendContract, ValidatesTargetsContract):
         )
 
     @pytest.fixture
-    def populated_location(self, backend: HTTPBackend) -> str:
+    def populated_location(self, backend: ApiBackend) -> str:
         return "production"
 
     @pytest.fixture
-    def empty_location(self, backend: HTTPBackend) -> str:
+    def empty_location(self, backend: ApiBackend) -> str:
         return "staging-no-row"
 
     @pytest.fixture
-    def invalid_location(self, backend: HTTPBackend) -> str:
+    def invalid_location(self, backend: ApiBackend) -> str:
         return "layer-that-doesnt-exist"

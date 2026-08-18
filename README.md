@@ -1,490 +1,249 @@
 # read_config
 
-> Ansible module for hierarchical role configuration with pluggable storage
-> backends. Ships as the `devitops.ansible` collection.
+> An Ansible module for role configuration that varies by environment,
+> datacenter, or host — assembled from a hierarchy of defaults and
+> overrides, out of whichever storage you happen to keep it in.
 
-Start with YAML/JSON/INI files on disk. When the data outgrows the repo, move
-the same merge hierarchy into SQL, Redis, etcd, Consul, or a REST API — the
-module's merge semantics don't change when you switch backends.
+Ships as the `devitops.ansible` collection.
 
-## Motivation
+## The problem
 
-Ansible roles usually need configuration that varies by environment,
-datacenter, host, or service — on top of shared defaults. The usual tools
-(`group_vars`, `host_vars`, `vars_files`, Jinja conditionals) handle simple
-cases, but start to strain when:
+Say you have a `webapp` role. It needs two worker processes in staging and
+eight in production. The EU datacenter talks to a different database host
+than the US one. The connection pool is 10 by default, 50 in production, but
+40 in EU because that database is smaller. Everything else — the listen port,
+the log format, the health-check path — is the same everywhere.
 
-- values live in nested dicts that need **deep merging**;
-- override precedence follows a **hierarchy** (global → env → datacenter →
-  host);
-- config data lives **outside inventory** (a database, a config server,
-  Consul, a REST API);
-- the same merged result is consumed by **multiple roles**.
+So you have shared defaults, and a chain of increasingly specific overrides
+on top of them. Nothing about that is exotic; it is how most infrastructure
+configuration is actually shaped.
 
-`read_config` takes a role-identified set of sources (YAML files named
-`<role>.yaml`, rows in a SQL table keyed by `role_name`, Redis keys under
-`.../<role>/...`, etc.) and merges them in a deterministic order, with child
-values overriding parent values via Ansible's `dict_merge`. The storage
-backend is pluggable; the merge behavior is not.
+Ansible gives you `group_vars`, `host_vars`, `vars_files`, and Jinja
+conditionals, and for a while they are enough. Three things tend to push past
+them:
 
-## Merge semantics at a glance
+**Nested values don't merge the way you want.** Two `group_vars` files that
+both define `database:` don't combine — the higher-precedence one replaces
+the other outright, and your carefully-set `pool_size` disappears along with
+it. You can reach for the `combine(recursive=True)` filter, but then you are
+hand-writing the precedence chain in every role that needs it, and it stays
+correct only as long as everyone writes it the same way. (`hash_behaviour =
+merge` fixes the merge, but applies globally to every variable in the run,
+which is why it is discouraged.)
+
+**The hierarchy is inventory-shaped.** `group_vars` precedence follows your
+inventory groups. If your real override order is *global → environment →
+datacenter → host*, you can usually contort inventory into that shape — but
+the contortion is the point: you end up encoding a configuration hierarchy
+in a structure designed for host grouping.
+
+**The data may not live in the repo.** Once configuration is edited by people
+who don't send pull requests, it tends to migrate into a database, a config
+server, Consul, or whatever your provisioning system already exposes over
+REST. At that point `group_vars` isn't in the conversation at all.
+
+`read_config` addresses all three. You give it a role name and a location in
+a hierarchy; it walks from the root down to that location, deep-merges every
+level it finds, and returns one dict plus the list of exactly which sources
+contributed to it.
+
+The storage backend is pluggable. The merge behaviour is not — that is the
+whole idea. Start with YAML files in the repo, and if the data later moves
+into Postgres or Consul, the merge semantics your roles depend on move with
+it unchanged.
+
+## What it does
 
 Given this tree:
 
 ```
-config/
-├── myrole.yaml                   # k1: base, k2: {a: 1, b: 2}
+configs/
+├── webapp.yaml                    # workers: 2, log_level: info
+│                                  # database: {pool_size: 10, host: db.default}
 └── production/
-    └── myrole.yaml               # k2: {b: override, c: 3}, k3: prod
+    ├── webapp.yaml                # workers: 8, log_level: warn
+    │                              # database: {pool_size: 50}
+    └── eu-west/
+        └── webapp.yaml            # database: {pool_size: 40, host: db.eu-west}
 ```
 
-Calling:
+Asking for `production/eu-west`:
 
 ```yaml
 - devitops.ansible.read_config:
-    role_name: myrole
-    config_dir: ./config
-    config_path: ./config/production
+    role_name: webapp
+    config_dir: /srv/configs
+    config_path: /srv/configs/production/eu-west
 ```
 
-Produces:
+gives you:
 
 ```yaml
-k1: base             # inherited unchanged from parent
-k2:
-  a: 1               # inherited from parent
-  b: override        # child wins on collision
-  c: 3               # added by child
-k3: prod             # added by child
+workers: 8                   # production overrode the default
+log_level: warn              # production overrode the default
+database:
+  pool_size: 40              # eu-west beat production, which beat the default
+  host: db.eu-west           # eu-west overrode the default
 ```
 
-Rules:
+Look at `database`: it is defined at all three levels, and the result is
+their union rather than whichever one won. That recursive merge is the
+behaviour that is awkward to get out of `group_vars` alone.
 
-- Dicts are merged **recursively** (deep merge).
-- Scalars follow **child-wins** precedence.
-- Levels whose role file is absent are silently skipped.
-- Every result carries a `files_merged` list for provenance.
+Every result also carries the ordered list of files that produced it, so
+"where did this value come from?" has an answer.
 
-The same conceptual model applies to every backend: "parent" for SQL/KV
-means a shorter `/`-delimited path; for HTTP it means an earlier layer in
-the configured request chain.
+## Quick start
 
-## Features
-
-- **Pluggable backends** — `filesystem`, `sql`, `redis`, `etcd`, `consul`,
-  `http`. Third-party backends implement a six-method Protocol.
-  ```yaml
-  backend: redis
-  backend_options:
-    url: redis://redis.example.com:6379/0
-    prefix: role_configs
-  ```
-
-- **Multiple file formats** (filesystem) — YAML (`.yaml`/`.yml`), JSON,
-  INI (`.ini`/`.cfg`).
-  ```yaml
-  format: json
-  ```
-
-- **Hierarchical deep merge** — child values override parent values;
-  sub-dicts are merged, not replaced.
-  ```text
-  # /config/myrole.yaml          -> timeouts: {connect: 5, read: 30}
-  # /config/prod/myrole.yaml     -> timeouts: {read: 60}
-  # merged output                -> timeouts: {connect: 5, read: 60}
-  ```
-
-- **Tag filtering** — return only configs whose merged data includes a
-  specific `config_tag`.
-  ```yaml
-  config_tag: production
-  ```
-
-- **Schema validation** — validate every merged result against a JSON
-  Schema before returning it.
-  ```yaml
-  validate_schema: "{{ role_path }}/files/config.schema.json"
-  ```
-
-- **Change tracking** (filesystem only) — hash source files, compare
-  against the previous run, set `changed: true` when anything drifted.
-  ```yaml
-  track_changes: true
-  ```
-
-- **Dry run** — report which sources *would* contribute to the merge
-  without reading them.
-  ```yaml
-  dry_run: true
-  ```
-
-- **Provenance** — every result carries an ordered list of sources that
-  contributed to it.
-  ```yaml
-  ansible_facts:
-    read_config:
-      configs:
-        "/config/production":
-          meta:
-            files_merged:
-              - /config/myrole.yaml
-              - /config/production/myrole.yaml
-  ```
-
-## Backends at a glance
-
-| Backend      | Hierarchy model                      | Fingerprint               |
-|--------------|--------------------------------------|---------------------------|
-| `filesystem` | directory tree                        | SHA-256 of file bytes     |
-| `sql`        | path-based (`location` column)        | SHA-256 of row JSON       |
-| `redis`      | key-prefix                            | SHA-256 of value          |
-| `etcd`       | key-prefix                            | `mod_revision`            |
-| `consul`     | key-prefix                            | `ModifyIndex`             |
-| `http`       | ordered list of GET endpoints         | `ETag` or SHA-256 of body |
-
-## Installation
-
-### From Ansible Galaxy
+Install the collection:
 
 ```bash
 ansible-galaxy collection install devitops.ansible
 ```
 
-Or pin a version via `requirements.yml`:
-
-```yaml
-collections:
-  - name: devitops.ansible
-    version: ">=1.0.0,<2.0.0"
-```
+Create a small hierarchy. The file name must match the role name:
 
 ```bash
-ansible-galaxy collection install -r requirements.yml
-```
-
-### From source
-
-```bash
-git clone https://github.com/ksparavec/read_config.git
-cd read_config
-make build          # produces devitops-ansible-1.0.0.tar.gz
-make install-local  # installs into ~/.ansible/collections
-```
-
-### Python dependencies per backend
-
-Install only what your chosen backend needs:
-
-```bash
-pip install pyyaml jsonschema          # filesystem + schema validation (core)
-pip install sqlalchemy                 # sql backend
-pip install redis                      # redis backend
-pip install etcd3                      # etcd backend
-pip install python-consul              # consul backend
-pip install requests                   # http backend
-```
-
-## Parameters
-
-| Parameter           | Required | Default      | Applies to      | Description |
-|---------------------|:--------:|--------------|-----------------|-------------|
-| **role_name**       | **Yes**  | N/A          | all             | Role identifier used to locate config data. Cannot contain path separators. |
-| **backend**         | No       | `filesystem` | all             | Storage backend. One of `filesystem`, `sql`, `redis`, `etcd`, `consul`, `http`. |
-| **backend_options** | No       | `null`       | non-filesystem  | Dict of backend-specific kwargs (DSN, URL templates, etc.). See the backend's factory signature. |
-| **config_dir**      | No       | role vars dir | filesystem     | Top-level directory to scan. Must exist and be readable. |
-| **config_path**     | No       | `null`       | all             | Restrict output to a single location (path for filesystem, key for KV, layer name for HTTP, …). Must resolve inside the backend's root. |
-| **config_tag**      | No       | `null`       | all             | Include only configs whose merged data has `config_tag: <value>`. |
-| **format**          | No       | `yaml`       | filesystem      | File format: `yaml`, `json`, `ini`. |
-| **validate_schema** | No       | `null`       | all             | JSON Schema file to validate merged data against. |
-| **track_changes**   | No       | `false`      | filesystem      | Track checksum changes between runs and report `changed: true`. Fails on non-filesystem backends. |
-| **dry_run**         | No       | `false`      | all             | Report which sources would be merged without reading them. |
-
-## Backend-specific examples
-
-All examples use the fully-qualified collection name.
-
-### Filesystem (default)
-
-```yaml
-- name: Read all YAML configurations
-  devitops.ansible.read_config:
-    role_name: myrole
-    config_dir: /etc/myapp/config
-  register: all_configs
-```
-
-### SQL (SQLAlchemy DSN)
-
-```yaml
-- name: Read from a Postgres role_configs table
-  devitops.ansible.read_config:
-    role_name: myrole
-    backend: sql
-    backend_options:
-      dsn: "postgresql+psycopg://user:pass@db.example.com/appdb"
-      table: role_configs
-    config_path: "production/web/frontend"
-  register: sql_configs
-  delegate_to: localhost
-```
-
-### Redis
-
-```yaml
-- name: Read from Redis (key prefix configs/myrole/...)
-  devitops.ansible.read_config:
-    role_name: myrole
-    backend: redis
-    backend_options:
-      url: redis://redis.example.com:6379/0
-      prefix: configs
-    config_path: "production"
-  register: redis_configs
-  delegate_to: localhost
-```
-
-### HTTP — layered REST API
-
-```yaml
-- name: Read merged parameters from a REST API
-  devitops.ansible.read_config:
-    role_name: myrole
-    backend: http
-    backend_options:
-      auth_token: "{{ api_token }}"
-      timeout: 10
-      # Optional allowlist: refuse to fetch from any host not in this list.
-      # Defense-in-depth against template/context injection redirecting
-      # requests to an attacker-controlled endpoint.
-      allowed_hosts: ["api.example.com"]
-      context:
-        organization_id: 3
-        host_id: 42
-      layers:
-        - name: organization
-          url: "https://api.example.com/v1/organizations/{organization_id}/parameters"
-          params: {per_page: "all"}
-          data_path: "results"
-          list_name_key: "name"
-          required_context: [organization_id]
-        - name: host
-          url: "https://api.example.com/v1/hosts/{host_id}/parameters"
-          params: {per_page: "all"}
-          data_path: "results"
-          list_name_key: "name"
-          required_context: [host_id]
-    config_path: host
-  register: http_configs
-  delegate_to: localhost
-```
-
-## Full playbook example
-
-A typical webapp deployment where role vars are merged from shared defaults,
-env-specific overrides, and per-datacenter overrides.
-
-### Layout
-
-```
-.
-├── site.yml
-├── configs/
-│   ├── webapp.yaml
-│   ├── staging/
-│   │   ├── webapp.yaml
-│   │   └── us-east/
-│   │       └── webapp.yaml
-│   └── production/
-│       ├── webapp.yaml
-│       ├── us-east/
-│       │   └── webapp.yaml
-│       └── eu-west/
-│           └── webapp.yaml
-└── roles/
-    └── webapp/
-        ├── tasks/main.yml
-        ├── templates/app.conf.j2
-        ├── handlers/main.yml
-        └── files/webapp.schema.json
-```
-
-### Config files
-
-```yaml
-# configs/webapp.yaml  (shared defaults)
+mkdir -p configs/production
+cat > configs/webapp.yaml <<'EOF'
 listen_port: 8080
 workers: 2
-log_level: info
 database:
   pool_size: 10
-```
-
-```yaml
-# configs/production/webapp.yaml
+  host: db.default.internal
+EOF
+cat > configs/production/webapp.yaml <<'EOF'
 workers: 8
-log_level: warn
 database:
   pool_size: 50
+EOF
 ```
 
-```yaml
-# configs/production/eu-west/webapp.yaml
-database:
-  host: db.eu-west.internal
-  pool_size: 40
-```
-
-### Role
-
-```yaml
-# roles/webapp/tasks/main.yml
-- name: Load merged webapp config for this host
-  devitops.ansible.read_config:
-    role_name: webapp
-    config_dir: "{{ playbook_dir }}/configs"
-    config_path: "{{ playbook_dir }}/configs/{{ env }}/{{ dc }}"
-    validate_schema: "{{ role_path }}/files/webapp.schema.json"
-    track_changes: true
-  register: cfg
-  delegate_to: localhost
-  run_once: true
-
-- name: Render webapp.conf
-  template:
-    src: app.conf.j2
-    dest: /etc/webapp/webapp.conf
-    mode: "0640"
-  vars:
-    webapp: "{{ (cfg.ansible_facts.read_config.configs.values() | first).data }}"
-  notify: restart webapp
-```
-
-```yaml
-# roles/webapp/handlers/main.yml
-- name: restart webapp
-  ansible.builtin.service:
-    name: webapp
-    state: restarted
-```
-
-### Playbook
+Read it back:
 
 ```yaml
 # site.yml
-- hosts: webapp_servers
+- hosts: localhost
   gather_facts: false
-  vars:
-    env: production
-    dc: eu-west
-  roles:
-    - webapp
+  tasks:
+    - name: Load the merged webapp config for production
+      devitops.ansible.read_config:
+        role_name: webapp
+        config_dir: "{{ playbook_dir }}/configs"
+        config_path: "{{ playbook_dir }}/configs/production"
+      register: cfg
+
+    - name: Show the result
+      ansible.builtin.debug:
+        var: cfg.ansible_facts.read_config.configs.values() | first
 ```
-
-### Resulting merge
-
-For a host in `production/eu-west`, the `read_config` task loads:
-
-```yaml
-listen_port: 8080            # shared default
-workers: 8                   # production override
-log_level: warn              # production override
-database:
-  pool_size: 40              # eu-west override of production's 50
-  host: db.eu-west.internal  # eu-west addition
-```
-
-Because `track_changes: true` is set, editing any of the three
-`webapp.yaml` files on disk causes the next run to report
-`changed: true` and fire the `restart webapp` handler. If `.webapp.conf`
-renders identically, Ansible's template task still reports `ok` — the
-change signal is specifically about the config sources, not the rendered
-output.
-
-## Return values
-
-```yaml
-ansible_facts:
-  read_config:
-    mode: multiple          # or 'single' when config_path is specified
-    configs:
-      "/absolute/path/to/location":
-        meta:
-          files_merged:
-            - "/absolute/path/to/myrole.yaml"
-            - "/absolute/path/to/location/myrole.yaml"
-        data:
-          key1: value1
-          config_tag: production
-    matched_count: 1
-    changed_files:           # only when track_changes is true
-      - "/absolute/path/to/location/myrole.yaml"
-changed: true                # only when track_changes is true and anything drifted
-```
-
-- `mode`: `"single"` when `config_path` was given, `"multiple"` otherwise.
-- `configs`: keyed by location identifier; each entry has a `meta.files_merged`
-  provenance list and a `data` dict with the merged payload.
-- `matched_count`: number of entries in `configs` (after `config_tag` filtering).
-- `changed_files` / `changed`: present only when `track_changes: true`.
-
-## Security
-
-- **Secrets are never logged.** `backend_options` carries DSNs, auth tokens,
-  and Basic-auth credentials; the argument spec marks it `no_log=True`, so
-  Ansible redacts the entire dict from task logs, callbacks, and
-  `--verbose` output.
-- **Filesystem path traversal:** every resolved path must lie inside
-  `config_dir`. Traversal attempts (`..` segments, symlinks pointing
-  outside the root) raise `ValueError`.
-- **Role-name hygiene:** role names may not contain path separators
-  (`/`, `\`, `os.sep`).
-- **SQL injection:** the SQL backend validates table / column / separator
-  identifiers against a strict regex before interpolation, and runtime
-  values (`role_name`, `location`) use SQLAlchemy bound parameters. The
-  `dsn` property returns SQLAlchemy's password-redacted URL form, so it
-  is safe to surface in error/debug output.
-- **HTTP SSRF & template injection:**
-  - Context values containing `{` or `}` are rejected at construction time
-    to block Python format-string gadgets (e.g.
-    `{__class__.__mro__}`).
-  - Configure `allowed_hosts: [...]` in `backend_options` to pin outbound
-    requests to a hostname allowlist. Requests to any other host fail
-    before the wire call.
-  - `verify_tls` is `True` by default.
-- **Schema files:** `validate_schema` rejects non-regular-file paths (no
-  FIFOs/devices) and catches structurally-invalid merged configs before
-  they are consumed downstream.
-- **Delegate network backends:** SQL / Redis / etcd / Consul / HTTP
-  typically run against a central store reachable from the controller,
-  not each target host. Use `delegate_to: localhost` unless the target
-  host actually needs to reach the backend directly.
-
-## Development and testing
-
-The repo has a pytest-based test suite (342 tests, ~96% coverage) plus a
-subprocess-based integration suite that invokes the module as a real
-Ansible subprocess.
 
 ```bash
-make venv            # create .venv and install dev deps
-make test            # unit tests only (fast)
-make integration     # integration tests only
-make test-all        # everything
-make coverage        # unit tests with terminal coverage report
-make coverage-html   # HTML coverage at htmlcov/index.html
+ansible-playbook site.yml
 ```
 
-Layout:
+You get the merged configuration, plus its provenance:
 
-- `tests/unit/` — per-backend unit tests plus the `BackendContract`
-  conformance suite (and its two mixins, `ValidatesTargetsContract` and
-  `ContentAwareDiscoveryContract`).
-- `tests/integration/` — module-as-subprocess end-to-end tests.
+```yaml
+meta:
+  files_merged:
+    - /path/to/configs/webapp.yaml
+    - /path/to/configs/production/webapp.yaml
+data:
+  listen_port: 8080            # inherited from the root level
+  workers: 8                   # overridden by production
+  database:
+    pool_size: 50              # overridden by production
+    host: db.default.internal  # inherited from the root level
+```
 
-To add a new backend, implement the six-method `ConfigBackend` Protocol in
-`plugins/module_utils/read_config_core/`, register it via
-`register_backend("yourname", YourBackend)`, and subclass `BackendContract`
-(plus the applicable mixins) for free conformance coverage.
+> One thing to watch: for the filesystem backend, `config_path` must be an
+> **absolute** path. A relative value is resolved against the working
+> directory of the Ansible process, not against `config_dir`.
+
+Omit `config_path` and you get every location that holds a `webapp.yaml`,
+each merged with its own ancestors.
+
+## Features
+
+- **Six storage backends** — `filesystem`, `sql` (any SQLAlchemy database),
+  `redis`, `etcd`, `consul`, and `api` for layered REST APIs. Switching
+  backends does not change how your configuration merges.
+- **Presets for real APIs** — `foreman`, `awx`, and `netbox` ship as Python
+  adapters that know their product. You give a base URL and a host; the
+  adapter looks it up, works out which levels that host actually belongs to,
+  and merges them all. Nothing about the hierarchy goes in the playbook, and
+  `excludes` drops any level you don't want. Custom APIs are still described
+  by hand, and you can register an adapter of your own.
+- **Hierarchical deep merge** — dicts merge recursively; scalars and lists
+  follow child-wins precedence; missing levels are skipped silently.
+- **Provenance** — every result names the ordered sources that produced it.
+- **Schema validation** — check merged output against a JSON Schema before a
+  role consumes it.
+- **Change tracking** — detect when configuration sources have drifted since
+  the last run and report `changed`, so handlers fire.
+- **Tag filtering** — return only the configs carrying a given `config_tag`.
+- **Dry run** — see which sources *would* contribute, without merging them.
+- **Multiple file formats** — YAML, JSON, and INI on the filesystem backend.
+- **Extensible** — add a backend by implementing a six-method protocol, or a
+  key-value store by implementing three methods and reusing the existing
+  hierarchy logic.
+
+## Documentation
+
+[**REFERENCE.md**](REFERENCE.md) has the complete details:
+
+| Looking for | See |
+|---|---|
+| Every module parameter | [Parameters](REFERENCE.md#parameters) |
+| Options for a specific backend | [backend_options reference](REFERENCE.md#backend_options-reference) |
+| Talking to Foreman, AWX, or NetBox | [API presets](REFERENCE.md#api-presets) |
+| A working example per backend | [Backend-specific examples](REFERENCE.md#backend-specific-examples) |
+| How the REST backend models an API | [API semantics](REFERENCE.md#api-semantics) |
+| A realistic end-to-end deployment | [Full playbook example](REFERENCE.md#full-playbook-example) |
+| Change tracking, dry run, check mode | [Operational notes](REFERENCE.md#operational-notes) |
+| Output structure | [Return values](REFERENCE.md#return-values) |
+| Threat model and hardening | [Security](REFERENCE.md#security) |
+| Writing your own backend | [Development and testing](REFERENCE.md#development-and-testing) |
+
+Runnable examples for every backend — including the Foreman preset — ship
+inside the module itself, so they are available offline once the collection
+is installed:
+
+```bash
+ansible-doc devitops.ansible.read_config          # full docs + examples
+ansible-doc -s devitops.ansible.read_config       # a paste-ready task snippet
+```
+
+The same examples are in
+[Backend-specific examples](REFERENCE.md#backend-specific-examples) if you
+would rather read them in the browser.
+
+### Project documents
+
+| Document | What it covers |
+|---|---|
+| [CHANGELOG.md](CHANGELOG.md) | Released and unreleased changes, including breaking ones |
+| [IMPROVEMENTS.md](IMPROVEMENTS.md) | Known issues and the prioritized backlog |
+| [REFERENCE.md](REFERENCE.md) | Complete parameter, backend, and security reference |
+| [LICENSE.md](LICENSE.md) | MIT |
+
+## Development
+
+```bash
+make venv        # create .venv and install dev dependencies
+make test        # unit tests only (~1s, no Podman needed)
+make test-all    # unit + integration + live tests
+make coverage    # coverage report
+```
+
+There is also a live suite that runs every backend against a real server in a
+Podman container — PostgreSQL, MariaDB, Redis, etcd, Consul, and, for the API
+presets, real Foreman 3.16.0, NetBox 4.6.8, and AWX 24.6.1. See
+[Development and testing](REFERENCE.md#development-and-testing).
+
+Bug reports and pull requests are welcome at
+[github.com/ksparavec/read_config](https://github.com/ksparavec/read_config).
 
 ## License
 

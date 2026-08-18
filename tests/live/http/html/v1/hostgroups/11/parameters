@@ -1,0 +1,4 @@
+{"results": [
+  {"name": "workers", "value": 4},
+  {"name": "role_tier", "value": "frontend"}
+]}

@@ -1,0 +1,15 @@
+# Client libraries for the live backend suite (tests/live).
+#
+# Kept out of requirements-dev.txt so `make test` stays fast and dependency
+# light: the unit suite fakes these stores, only the live suite talks to real
+# ones. Install with `make live-install` or:
+#     pip install -r requirements-dev.txt -r requirements-live.txt
+#
+# NOTE: etcd3 0.12.0 ships protobuf stubs generated in 2021. Under protobuf
+# >= 4 it only imports with PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python,
+# which the Makefile's live targets set for you.
+
+psycopg[binary]>=3.1      # postgres driver for the sql backend
+pymysql>=1.1              # mariadb/mysql driver for the sql backend
+etcd3>=0.12               # etcd backend
+python-consul>=1.1        # consul backend

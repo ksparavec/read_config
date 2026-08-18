@@ -9,6 +9,7 @@ addopts = [
 markers = [
     "unit: unit tests (default)",
     "integration: integration tests that invoke the module as a subprocess",
+    "live: live tests against real backend services running in Podman containers",
 ]
 
 [tool.coverage.run]

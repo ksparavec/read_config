@@ -49,7 +49,9 @@ build_ignore:
   - Makefile
   - pyproject.toml
   - requirements-dev.txt
+  - requirements-live.txt
   - CLAUDE.md
+  - IMPROVEMENTS.md
   - .gitignore
   - .git
   - .claude
