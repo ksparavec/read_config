@@ -249,7 +249,12 @@ probe() {
     etcd)     $PODMAN exec -e ETCDCTL_API=3 "$name" etcdctl \
                 --endpoints=http://127.0.0.1:2379 endpoint health ;;
     consul)   curl -fsS "http://127.0.0.1:${port}/v1/status/leader" 2>/dev/null | grep -q ':' ;;
-    nginx)    curl -fsS -o /dev/null "http://127.0.0.1:${port}/healthz" 2>/dev/null ;;
+    # Fetches a real fixture rather than /healthz: checking out a branch
+    # replaces the mounted directory's inodes, leaving the container serving a
+    # stale mount. That shows up as a working server with 404s everywhere, so
+    # readiness has to mean "the fixtures are actually visible".
+    nginx)    curl -fsS -o /dev/null -H "Authorization: Bearer ${HTTP_TOKEN}" \
+                "http://127.0.0.1:${port}/v1/hier/global/parameters" 2>/dev/null ;;
     foreman)  curl -fsS -u "${FOREMAN_USER}:${FOREMAN_PASS}" \
                 "http://127.0.0.1:${port}/api/v2/status" 2>/dev/null \
                 | grep -q '"result":"ok"' ;;

@@ -984,6 +984,14 @@ AWX is served by Django directly rather than through its bundled web stack,
 whose nginx wants port 80 — unavailable under rootless podman. Only the read
 API is exercised, so that makes no difference to what is tested.
 
+> **Switching branches with the fleet up breaks the nginx fixtures.** A
+> checkout replaces the mounted directory's inodes, and the container keeps
+> serving the old ones — a healthy server that 404s everything. The readiness
+> probe fetches a real fixture rather than a health endpoint so
+> `containers.sh status` reports this as *not ready* instead of letting it
+> surface as a couple of dozen puzzling test failures. Recreate the container
+> (`podman rm -f rclive-nginx && make live-up`) after a checkout.
+
 Container logs are scanned for `FATAL`/`PANIC`/`ERROR` lines, scoped to
 the current pytest session. A test that provokes a server error on
 purpose declares it via the `expect_container_error` fixture; anything
